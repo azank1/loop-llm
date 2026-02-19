@@ -1,4 +1,4 @@
-"""OpenRouter LLM provider."""
+"""Ollama LLM provider."""
 from __future__ import annotations
 
 import time
@@ -12,32 +12,30 @@ logger = structlog.get_logger(__name__)
 
 
 @dataclass
-class OpenRouterProvider(LLMProvider):
-    """LLM provider backed by the OpenRouter API.
+class OllamaProvider(LLMProvider):
+    """LLM provider backed by a local Ollama instance.
 
     Args:
-        api_key: OpenRouter API key.
-        base_url: Base URL for the OpenRouter API.
+        base_url: Base URL for the Ollama API.
     """
 
-    api_key: str
-    base_url: str = "https://openrouter.ai/api/v1"
+    base_url: str = "http://localhost:11434"
 
     @property
     def name(self) -> str:
         """Provider name."""
-        return "openrouter"
+        return "ollama"
 
     def complete(self, prompt: str, model: str, **kwargs) -> LLMResponse:
-        """Call the OpenRouter chat completions endpoint.
+        """Call the Ollama chat endpoint.
 
         Args:
             prompt: The user prompt to complete.
-            model: OpenRouter model identifier (e.g. ``openai/gpt-4o-mini``).
+            model: Ollama model name (e.g. ``llama3``).
             **kwargs: Extra fields merged into the request body.
 
         Returns:
-            Parsed :class:`LLMResponse` with content, usage, and latency.
+            Parsed :class:`LLMResponse` with content and latency.
 
         Raises:
             RuntimeError: If the API returns a non-200 status code.
@@ -47,36 +45,32 @@ class OpenRouterProvider(LLMProvider):
             import httpx
         except ImportError as exc:  # pragma: no cover
             raise ImportError(
-                "httpx is required for OpenRouterProvider. "
-                "Install it with: pip install loopllm[openrouter]"
+                "httpx is required for OllamaProvider. "
+                "Install it with: pip install loopllm[ollama]"
             ) from exc
 
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/azank1/loop-llm",
-        }
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
             **kwargs,
         }
 
         t0 = time.perf_counter()
         response = httpx.post(
-            f"{self.base_url}/chat/completions",
-            headers=headers,
+            f"{self.base_url}/api/chat",
             json=payload,
         )
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
         if response.status_code != 200:
             raise RuntimeError(
-                f"OpenRouter returned {response.status_code}: {response.text}"
+                f"Ollama returned {response.status_code}: {response.text}"
             )
 
         data = response.json()
-        content = data["choices"][0]["message"]["content"]
+        content = data["message"]["content"]
+
         usage_data = data.get("usage", {})
         usage = LLMUsage(
             prompt_tokens=usage_data.get("prompt_tokens", 0),
@@ -85,10 +79,9 @@ class OpenRouterProvider(LLMProvider):
         )
 
         logger.debug(
-            "openrouter_complete",
+            "ollama_complete",
             model=model,
             latency_ms=round(latency_ms, 1),
-            total_tokens=usage.total_tokens,
         )
 
         return LLMResponse(
