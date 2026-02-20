@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -46,5 +47,5 @@ class LLMProvider(ABC):
         """Human-readable provider name."""
 
     @abstractmethod
-    def complete(self, prompt: str, model: str, **kwargs) -> LLMResponse:
+    def complete(self, prompt: str, model: str, **kwargs: Any) -> LLMResponse:
         """Send *prompt* to *model* and return a normalised response."""

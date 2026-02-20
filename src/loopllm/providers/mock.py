@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from loopllm.provider import LLMProvider, LLMResponse, LLMUsage
 
@@ -19,7 +20,7 @@ class MockLLMProvider(LLMProvider):
     responses: list[str] | None = None
     default_score: float = 0.9
     latency_ms: float = 10.0
-    calls: list[dict] = field(default_factory=list, repr=False)
+    calls: list[dict[str, Any]] = field(default_factory=list, repr=False)
     _index: int = field(default=0, repr=False)
 
     @property
@@ -32,7 +33,7 @@ class MockLLMProvider(LLMProvider):
         """Number of calls made so far."""
         return len(self.calls)
 
-    def complete(self, prompt: str, model: str, **kwargs) -> LLMResponse:
+    def complete(self, prompt: str, model: str, **kwargs: Any) -> LLMResponse:
         """Return the next mock response.
 
         Cycles through *responses* if provided, otherwise returns

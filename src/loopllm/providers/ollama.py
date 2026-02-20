@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import structlog
 
+from typing import Any
+
 from loopllm.provider import LLMProvider, LLMResponse, LLMUsage
 
 logger = structlog.get_logger(__name__)
@@ -26,7 +28,7 @@ class OllamaProvider(LLMProvider):
         """Provider name."""
         return "ollama"
 
-    def complete(self, prompt: str, model: str, **kwargs) -> LLMResponse:
+    def complete(self, prompt: str, model: str, **kwargs: Any) -> LLMResponse:
         """Call the Ollama chat endpoint.
 
         Args:

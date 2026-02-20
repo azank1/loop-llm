@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import structlog
 
+from typing import Any
+
 from loopllm.provider import LLMProvider, LLMResponse, LLMUsage
 
 logger = structlog.get_logger(__name__)
@@ -28,7 +30,7 @@ class OpenRouterProvider(LLMProvider):
         """Provider name."""
         return "openrouter"
 
-    def complete(self, prompt: str, model: str, **kwargs) -> LLMResponse:
+    def complete(self, prompt: str, model: str, **kwargs: Any) -> LLMResponse:
         """Call the OpenRouter chat completions endpoint.
 
         Args:
