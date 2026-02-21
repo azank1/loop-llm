@@ -2,7 +2,13 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Prompt quality scoring and iterative refinement as an MCP server. Works with VS Code Copilot, Cursor, or any MCP-compatible client. No extra LLM required.
+**A prompt observer and quality loop for your AI agent.**
+
+loop-llm sits between you and your IDE's agent as an MCP server. Every prompt you write is intercepted, scored across five quality dimensions, and routed to the right tool — clarification, refinement, or task decomposition. It tracks your prompting history over time, lets you manage multi-task plans with confidence gating, and runs iterative improvement loops using the host agent's own LLM via MCP Sampling, with no separate model needed.
+
+Think of it as a **prompt observer**: it watches what you ask, measures how well-formed it is, tells you where it's weak, and automatically improves it before the agent acts.
+
+**Stack:** Python 3.11+, FastMCP (stdio), SQLite (Bayesian priors + prompt history + plans), deterministic heuristic scoring, MCP Sampling for mid-execution LLM calls.
 
 ---
 
@@ -50,15 +56,38 @@ For Cursor use `.cursor/mcp.json` with `"mcpServers"` as the top-level key.
 
 ## How it works
 
-Every prompt is scored across five dimensions: **Specificity**, **Constraint Clarity**, **Context Completeness**, **Ambiguity**, and **Format Specification**. The composite score (0–1) routes automatically:
-
 ```
-< 0.4   → elicitation  (agent asks clarifying questions)
-0.4–0.6 → elicit then refine
-≥ 0.6   → direct refinement
+You type a prompt
+      ↓
+loopllm_intercept          ← scores it across 5 dimensions (~0ms, deterministic)
+      ↓
+route decision
+  < 0.4  → elicitation     ← agent asks the 1-2 highest-gain clarifying questions
+  0.4–0.6 → elicit + refine
+  ≥ 0.6  → refine directly
+      ↓
+loopllm_refine (if needed)
+  → ctx.sample(prompt)     ← MCP Sampling: calls host LLM mid-execution
+  → evaluate output        ← deterministic evaluators (length, regex, JSON schema)
+  → if score < threshold: ctx.sample(improved prompt)   ← retry inline
+  → return best result
+      ↓
+result logged to ~/.loopllm/store.db
 ```
 
-For generation tools (`loopllm_refine`, `loopllm_run_pipeline`, etc.), loopllm uses **MCP Sampling** — `ctx.sample()` calls the host agent's LLM mid-execution, runs evaluators on the result, and retries inline without ending the tool call. Falls back gracefully if the client has no sampling capability.
+**Scoring dimensions** (each 0–1, composited into a grade A–F):
+
+| Dimension | What it catches |
+|---|---|
+| Specificity | Vague, generic requests |
+| Constraint Clarity | Missing format, length, or rule requirements |
+| Context Completeness | No background or goal stated |
+| Ambiguity | Unclear references, pronouns without antecedents |
+| Format Specification | No output format specified |
+
+**MCP Sampling** means generation tools (`loopllm_refine`, `loopllm_run_pipeline`, `loopllm_plan_tasks`, `loopllm_verify_output`) call `ctx.sample()` to invoke the host agent's LLM inline — the entire score→generate→evaluate→retry loop happens inside a single tool call, not across multiple chat turns. Falls back to `agent_execute` passthrough if the client doesn't declare sampling capability.
+
+**Prompt history** is stored in SQLite with per-prompt scores, grades, task types, and session tags. Use `loopllm_context_history` to browse it, `loopllm_prompt_stats` for your trend sparkline, or `loopllm_context_clear` to reset.
 
 ---
 
