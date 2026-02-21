@@ -23,7 +23,7 @@ from loopllm.priors import (
 
 logger = structlog.get_logger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -124,6 +124,16 @@ CREATE INDEX IF NOT EXISTS idx_prompt_history_grade
     ON prompt_history(grade);
 """
 
+_SCHEMA_V3_SQL = """\
+CREATE TABLE IF NOT EXISTS plans (
+    plan_id         TEXT PRIMARY KEY,
+    goal            TEXT NOT NULL,
+    data            TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+"""
+
 
 class LoopStore:
     """SQLite-backed store for loop-llm state.
@@ -165,6 +175,7 @@ class LoopStore:
             if cursor.fetchone() is None:
                 conn.executescript(_SCHEMA_SQL)
                 conn.executescript(_SCHEMA_V2_SQL)
+                conn.executescript(_SCHEMA_V3_SQL)
                 conn.execute(
                     "INSERT INTO schema_version (version) VALUES (?)",
                     (SCHEMA_VERSION,),
@@ -188,6 +199,8 @@ class LoopStore:
         logger.info("store_migrating", from_version=from_v, to_version=to_v)
         if from_v < 2:
             conn.executescript(_SCHEMA_V2_SQL)
+        if from_v < 3:
+            conn.executescript(_SCHEMA_V3_SQL)
         conn.execute("UPDATE schema_version SET version = ?", (to_v,))
         conn.commit()
 
@@ -917,6 +930,74 @@ class LoopStore:
             overall_converge_rate=self._deserialize_beta(data["overall_converge_rate"]),
             first_call_quality=self._deserialize_normal(data["first_call_quality"]),
         )
+
+    # -- plan persistence ----------------------------------------------------
+
+    def save_plan(self, plan_dict: dict[str, Any]) -> None:
+        """Upsert a plan (full JSON blob) into the plans table.
+
+        Args:
+            plan_dict: Output of ``Plan.to_dict()``, must include ``plan_id``.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        plan_id = plan_dict["plan_id"]
+        goal = plan_dict.get("goal", "")
+        data = json.dumps(plan_dict)
+        with self._connection() as conn:
+            conn.execute(
+                """INSERT INTO plans (plan_id, goal, data, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(plan_id) DO UPDATE SET
+                       data = excluded.data,
+                       updated_at = excluded.updated_at""",
+                (plan_id, goal, data, now, now),
+            )
+            conn.commit()
+
+    def load_plan(self, plan_id: str) -> dict[str, Any] | None:
+        """Load a plan dict by plan_id.
+
+        Args:
+            plan_id: The plan identifier.
+
+        Returns:
+            Plan dict or None if not found.
+        """
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT data FROM plans WHERE plan_id = ?", (plan_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row["data"])
+
+    def load_all_plans(self) -> list[dict[str, Any]]:
+        """Load all persisted plans.
+
+        Returns:
+            List of plan dicts, most recently updated first.
+        """
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT data FROM plans ORDER BY updated_at DESC"
+            ).fetchall()
+        return [json.loads(row["data"]) for row in rows]
+
+    def delete_plan(self, plan_id: str) -> bool:
+        """Delete a plan from the store.
+
+        Args:
+            plan_id: The plan identifier.
+
+        Returns:
+            True if a row was deleted.
+        """
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM plans WHERE plan_id = ?", (plan_id,)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
 
 
 class SQLiteBackedPriors(AdaptivePriors):

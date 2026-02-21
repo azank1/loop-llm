@@ -333,8 +333,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_mcp.add_argument(
         "--provider", default=None,
-        choices=["mock", "ollama", "openrouter"],
-        help="LLM provider (default: LOOPLLM_PROVIDER env or mock)",
+        choices=["agent", "mock", "ollama", "openrouter"],
+        help="LLM provider (default: LOOPLLM_PROVIDER env or agent)",
     )
     p_mcp.add_argument(
         "--model", default=None,
@@ -346,7 +346,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_mcp.set_defaults(func=cmd_mcp_server)
 
+    # --- serve ---
+    p_serve = subparsers.add_parser(
+        "serve",
+        help="Start REST scoring server for local models (Ollama, llama.cpp, etc.)",
+    )
+    p_serve.add_argument(
+        "--host", default="127.0.0.1",
+        help="Bind address (default: 127.0.0.1)",
+    )
+    p_serve.add_argument(
+        "--port", type=int, default=8765,
+        help="Port to listen on (default: 8765)",
+    )
+    p_serve.add_argument(
+        "--reload", action="store_true",
+        help="Enable auto-reload (development only)",
+    )
+    p_serve.set_defaults(func=cmd_serve)
+
     return parser
+
+
+def cmd_serve(args: argparse.Namespace) -> None:
+    """Start the loopllm scoring REST server."""
+    try:
+        from loopllm.serve import run_server
+    except ImportError:
+        print(
+            "Error: FastAPI and uvicorn are required for `loopllm serve`.\n"
+            "Install with: pip install loopllm[serve]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    run_server(host=args.host, port=args.port, reload=args.reload)
 
 
 def cmd_mcp_server(args: argparse.Namespace) -> None:
