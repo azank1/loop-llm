@@ -1,0 +1,95 @@
+{
+  "name": "loopllm-prompt-gauge",
+  "displayName": "Loop LLM — Prompt Quality Gauge",
+  "description": "Real-time prompt quality scoring, learning curve tracking, and improvement suggestions powered by loop-llm",
+  "version": "0.1.0",
+  "publisher": "loopllm",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "llm",
+    "prompt",
+    "quality",
+    "gauge",
+    "ai"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "loopllm",
+          "title": "Loop LLM",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "loopllm": [
+        {
+          "type": "webview",
+          "id": "loopllm.dashboard",
+          "name": "Prompt Dashboard"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "loopllm.refreshStats",
+        "title": "Loop LLM: Refresh Prompt Stats"
+      },
+      {
+        "command": "loopllm.showDashboard",
+        "title": "Loop LLM: Show Dashboard"
+      }
+    ],
+    "configuration": {
+      "title": "Loop LLM",
+      "properties": {
+        "loopllm.dbPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the loop-llm SQLite database. Defaults to ~/.loopllm/store.db"
+        },
+        "loopllm.pollIntervalMs": {
+          "type": "number",
+          "default": 3000,
+          "description": "How often (ms) to poll the database for updates"
+        },
+        "loopllm.statusFilePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to status.json file. Defaults to ~/.loopllm/status.json"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "lint": "eslint src --ext ts",
+    "package": "npx @vscode/vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/parser": "^6.0.0",
+    "eslint": "^8.56.0",
+    "typescript": "^5.3.0",
+    "@vscode/vsce": "^2.22.0"
+  },
+  "dependencies": {
+    "sql.js": "^1.10.0"
+  }
+}

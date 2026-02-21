@@ -43,12 +43,13 @@ class TestSchema:
         assert "sessions" in names
         assert "tasks" in names
         assert "schema_version" in names
+        assert "prompt_history" in names
 
     def test_schema_version(self, store: LoopStore) -> None:
         with store._connection() as conn:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
         assert row is not None
-        assert row["version"] == 1
+        assert row["version"] == 2
 
 
 # -- priors CRUD -------------------------------------------------------------

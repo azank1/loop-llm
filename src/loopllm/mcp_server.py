@@ -1,8 +1,8 @@
 """MCP server exposing loop-llm tools to IDE agents.
 
 Provides iterative refinement, intent elicitation, task orchestration,
-and Bayesian meta-learning as MCP tools for VS Code Copilot, Cursor,
-and other MCP-compatible clients.
+Bayesian meta-learning, and prompt quality analysis as MCP tools for
+VS Code Copilot, Cursor, and other MCP-compatible clients.
 
 Usage::
 
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -38,11 +39,12 @@ _priors: SQLiteBackedPriors | None = None
 _provider: LLMProvider | None = None
 _default_model: str = "gpt-4o-mini"
 _active_sessions: dict[str, dict[str, Any]] = {}
+_status_path: Path | None = None
 
 
 def _init_state() -> None:
     """Lazily initialise shared store, priors, and provider."""
-    global _store, _priors, _provider, _default_model  # noqa: PLW0603
+    global _store, _priors, _provider, _default_model, _status_path  # noqa: PLW0603
 
     if _store is not None:
         return
@@ -52,6 +54,7 @@ def _init_state() -> None:
     _store = LoopStore(db_path=db_path)
     _priors = SQLiteBackedPriors(_store)
     _default_model = os.environ.get("LOOPLLM_MODEL", "gpt-4o-mini")
+    _status_path = db_path.parent / "status.json"
 
     provider_name = os.environ.get("LOOPLLM_PROVIDER", "mock")
     _provider = _make_provider(provider_name)
@@ -157,8 +160,376 @@ def _result_to_dict(result: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Prompt quality scoring (heuristic-first)
+# ---------------------------------------------------------------------------
+
+
+def _score_prompt_quality(prompt: str) -> dict[str, Any]:
+    """Score a prompt across multiple quality dimensions.
+
+    Returns a dict with composite score, per-dimension scores, grade,
+    issues, suggestions, and an ASCII gauge.
+    """
+    words = prompt.split()
+    word_count = len(words)
+    prompt_lower = prompt.lower()
+
+    # --- Dimension: Specificity (0-1) ---
+    specificity = 1.0
+    vague_terms = ["something", "stuff", "thing", "things", "whatever", "somehow",
+                   "do it", "make it", "fix it", "help me", "do this"]
+    vague_hits = sum(1 for v in vague_terms if v in prompt_lower)
+    specificity -= min(0.5, vague_hits * 0.15)
+    if word_count < 5:
+        specificity -= 0.3
+    elif word_count < 10:
+        specificity -= 0.15
+    if word_count > 20:
+        specificity += 0.1
+    specificity = max(0.0, min(1.0, specificity))
+
+    # --- Dimension: Constraint Clarity (0-1) ---
+    constraint_clarity = 0.0
+    constraint_words = ["must", "should", "require", "need", "format", "length",
+                        "json", "csv", "return", "output", "include", "exclude",
+                        "type", "schema", "limit", "exactly", "at least", "at most",
+                        "no more than", "minimum", "maximum"]
+    constraint_hits = sum(1 for c in constraint_words if c in prompt_lower)
+    constraint_clarity = min(1.0, constraint_hits * 0.2)
+
+    # --- Dimension: Context Completeness (0-1) ---
+    context_completeness = 0.3  # base
+    context_markers = ["because", "context", "background", "given that",
+                       "for example", "e.g.", "such as", "like this",
+                       "the goal is", "we need", "the purpose", "in order to"]
+    ctx_hits = sum(1 for m in context_markers if m in prompt_lower)
+    context_completeness += min(0.5, ctx_hits * 0.15)
+    if word_count > 30:
+        context_completeness += 0.1
+    if word_count > 60:
+        context_completeness += 0.1
+    context_completeness = max(0.0, min(1.0, context_completeness))
+
+    # --- Dimension: Ambiguity (0=no ambiguity, 1=highly ambiguous) ---
+    ambiguity = 0.0
+    ambiguous_pronouns = ["it", "this", "that", "they", "them", "those"]
+    if word_count < 15:
+        pronoun_hits = sum(1 for w in words if w.lower() in ambiguous_pronouns)
+        ambiguity += min(0.4, pronoun_hits * 0.1)
+    if not any(c in prompt for c in ["?", ".", "!", ":"]):
+        ambiguity += 0.15
+    if word_count < 5:
+        ambiguity += 0.3
+    if "?" in prompt and word_count < 8:
+        ambiguity += 0.15
+    ambiguity = max(0.0, min(1.0, ambiguity))
+
+    # --- Dimension: Format Specification (0-1) ---
+    format_spec = 0.0
+    format_words = ["json", "csv", "xml", "html", "markdown", "yaml", "list",
+                    "table", "code", "python", "javascript", "typescript",
+                    "function", "class", "paragraph", "bullet points", "steps"]
+    fmt_hits = sum(1 for f in format_words if f in prompt_lower)
+    format_spec = min(1.0, fmt_hits * 0.25)
+
+    # --- Composite Score ---
+    weights = {
+        "specificity": 0.25,
+        "constraint_clarity": 0.20,
+        "context_completeness": 0.20,
+        "ambiguity": 0.20,
+        "format_spec": 0.15,
+    }
+    composite = (
+        weights["specificity"] * specificity
+        + weights["constraint_clarity"] * constraint_clarity
+        + weights["context_completeness"] * context_completeness
+        + weights["ambiguity"] * (1.0 - ambiguity)
+        + weights["format_spec"] * format_spec
+    )
+    composite = max(0.0, min(1.0, composite))
+
+    # --- Grade ---
+    if composite >= 0.85:
+        grade = "A"
+    elif composite >= 0.70:
+        grade = "B"
+    elif composite >= 0.55:
+        grade = "C"
+    elif composite >= 0.40:
+        grade = "D"
+    else:
+        grade = "F"
+
+    # --- Issues & Suggestions ---
+    issues: list[str] = []
+    suggestions: list[str] = []
+
+    if specificity < 0.5:
+        issues.append("Prompt is vague — lacks specific details")
+        suggestions.append("Add concrete details about what you need")
+    if constraint_clarity < 0.3:
+        issues.append("No explicit constraints or requirements detected")
+        suggestions.append("Specify output format, length, or quality requirements")
+    if context_completeness < 0.4:
+        issues.append("Insufficient context provided")
+        suggestions.append("Add background, examples, or explain the goal")
+    if ambiguity > 0.5:
+        issues.append("High ambiguity — contains unclear references")
+        suggestions.append("Replace pronouns (it, this, that) with specific nouns")
+    if format_spec < 0.3:
+        suggestions.append("Consider specifying the desired output format")
+
+    # --- ASCII Gauge ---
+    filled = int(composite * 10)
+    gauge = "\u2588" * filled + "\u2591" * (10 - filled)
+    pct = int(composite * 100)
+    gauge_str = f"{gauge} {pct}% [{grade}]"
+
+    return {
+        "quality_score": round(composite, 3),
+        "grade": grade,
+        "gauge": gauge_str,
+        "dimensions": {
+            "specificity": round(specificity, 3),
+            "constraint_clarity": round(constraint_clarity, 3),
+            "context_completeness": round(context_completeness, 3),
+            "ambiguity": round(ambiguity, 3),
+            "format_spec": round(format_spec, 3),
+        },
+        "word_count": word_count,
+        "issues": issues,
+        "suggestions": suggestions,
+    }
+
+
+def _classify_task_type(prompt: str) -> str:
+    """Fast heuristic task type classification (no LLM call)."""
+    import re
+
+    prompt_lower = prompt.lower()
+    # Order matters: more specific patterns first, general last.
+    # Multi-word phrases use plain substring match; single short words
+    # use word-boundary regex to avoid false positives (e.g. "api" in "capital").
+    patterns: list[tuple[str, list[str]]] = [
+        ("creative_writing", ["write a story", "poem", "creative", "narrative",
+                              "fiction", "blog post"]),
+        ("summarization", ["summarize", "summary", "tldr", "condense",
+                           "shorten"]),
+        ("data_extraction", ["extract", "parse", "list all",
+                             "pull out", "get all"]),
+        ("transformation", ["convert", "transform", "translate", "reformat",
+                            "restructure", "refactor"]),
+        ("analysis", ["analyze", "analyse", "compare", "evaluate", "assess",
+                      "review", "audit", "examine"]),
+        ("question_answering", ["what is", "how does", "explain", "why ",
+                                "describe", "define"]),
+        ("code_generation", ["implement", "create a function", "build",
+                             "code", "script", "program"]),
+    ]
+
+    # Short words needing word-boundary match to avoid substring false positives
+    boundary_patterns: list[tuple[str, list[str]]] = [
+        ("code_generation", [r"\bapi\b", r"\bclass\b"]),
+    ]
+
+    for task_type, keywords in patterns:
+        if any(kw in prompt_lower for kw in keywords):
+            return task_type
+
+    for task_type, regexes in boundary_patterns:
+        if any(re.search(rx, prompt_lower) for rx in regexes):
+            return task_type
+
+    # "write" alone → code_generation (after creative_writing checked above)
+    if "write" in prompt_lower:
+        return "code_generation"
+
+    return "general"
+
+
+def _estimate_complexity(prompt: str) -> float:
+    """Estimate task complexity from 0.0 (trivial) to 1.0 (very complex)."""
+    words = prompt.split()
+    score = 0.0
+    score += min(0.25, len(words) / 100)
+    conjunctions = sum(1 for w in words if w.lower() in
+                       ["and", "then", "also", "additionally", "plus"])
+    score += min(0.2, conjunctions * 0.05)
+    complex_kw = ["api", "database", "auth", "deploy", "test", "migrate",
+                  "integrate", "concurrent", "async", "distributed",
+                  "microservice", "pipeline", "architecture"]
+    matches = sum(1 for kw in complex_kw if kw in prompt.lower())
+    score += min(0.3, matches * 0.1)
+    if prompt.count(",") > 3:
+        score += 0.1
+    if any(m in prompt.lower() for m in ["in addition", "as well as", "furthermore"]):
+        score += 0.1
+    return min(1.0, round(score, 3))
+
+
+# ---------------------------------------------------------------------------
+# Status file writer — enables near-real-time VS Code extension updates
+# ---------------------------------------------------------------------------
+
+
+def _write_status(tool_name: str, data: dict[str, Any]) -> None:
+    """Write current status to ~/.loopllm/status.json for the VS Code extension."""
+    if _status_path is None:
+        return
+    try:
+        status = {
+            "timestamp": time.time(),
+            "tool": tool_name,
+            "data": data,
+        }
+        _status_path.write_text(json.dumps(status, indent=2, default=str))
+    except OSError:
+        pass  # Never crash on status write failure
+
+
+# ---------------------------------------------------------------------------
 # Tool implementations (sync — FastMCP wraps them in threads)
 # ---------------------------------------------------------------------------
+
+
+def _tool_intercept(prompt: str) -> str:
+    """Analyse a prompt and recommend the best approach before acting."""
+    store = _get_store()
+    priors = _get_priors()
+    model = _get_model()
+
+    quality = _score_prompt_quality(prompt)
+    task_type = _classify_task_type(prompt)
+    complexity = _estimate_complexity(prompt)
+    config = priors.suggest_config(task_type, model)
+
+    q = quality["quality_score"]
+    if q < 0.4:
+        route = "elicit"
+        reason = ("Prompt is too vague — clarifying questions will "
+                  "significantly improve output quality")
+        next_tool = "loopllm_elicitation_start"
+    elif complexity > 0.6:
+        route = "decompose"
+        reason = (f"Complex task (complexity={complexity:.2f}) — "
+                  "breaking into subtasks will produce better results")
+        next_tool = "loopllm_plan_tasks"
+    elif q < 0.6:
+        route = "elicit_then_refine"
+        reason = ("Prompt has gaps — quick elicitation then refinement "
+                  "recommended")
+        next_tool = "loopllm_elicitation_start"
+    else:
+        route = "refine"
+        reason = "Prompt is clear enough — direct refinement loop"
+        next_tool = "loopllm_refine"
+
+    store.record_prompt({
+        "prompt_text": prompt[:500],
+        "quality_score": quality["quality_score"],
+        "specificity": quality["dimensions"]["specificity"],
+        "constraint_clarity": quality["dimensions"]["constraint_clarity"],
+        "context_completeness": quality["dimensions"]["context_completeness"],
+        "ambiguity": quality["dimensions"]["ambiguity"],
+        "format_spec": quality["dimensions"]["format_spec"],
+        "task_type": task_type,
+        "complexity": complexity,
+        "route_chosen": route,
+        "word_count": quality["word_count"],
+        "grade": quality["grade"],
+    })
+
+    result = {
+        "route": route,
+        "reason": reason,
+        "next_tool": next_tool,
+        "quality": quality,
+        "task_type": task_type,
+        "complexity": complexity,
+        "prior_knowledge": config,
+    }
+
+    _write_status("intercept", {
+        "quality_score": quality["quality_score"],
+        "grade": quality["grade"],
+        "gauge": quality["gauge"],
+        "task_type": task_type,
+        "route": route,
+    })
+
+    return json.dumps(result, indent=2, default=str)
+
+
+def _tool_prompt_stats(window: int = 50) -> str:
+    """Get aggregate prompt quality statistics and learning curve."""
+    store = _get_store()
+    stats = store.get_prompt_stats(window=window)
+
+    curve = stats.get("learning_curve", [])
+    sparkline = ""
+    if curve:
+        spark_chars = " \u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
+        mn = min(curve)
+        mx = max(curve)
+        rng = mx - mn if mx > mn else 1.0
+        sparkline = "".join(
+            spark_chars[int((v - mn) / rng * 8)] for v in curve
+        )
+
+    stats["sparkline"] = sparkline
+
+    _write_status("prompt_stats", {
+        "total_prompts": stats.get("total_prompts", 0),
+        "avg_quality": stats.get("avg_quality", 0),
+        "trend": stats.get("trend", "no_data"),
+    })
+
+    return json.dumps(stats, indent=2, default=str)
+
+
+def _tool_feedback(
+    rating: int,
+    task_type: str = "general",
+    comment: str = "",
+) -> str:
+    """Record user quality feedback (1-5) to improve future predictions."""
+    priors = _get_priors()
+    model = _get_model()
+
+    clamped = max(1, min(5, rating))
+    normalized = clamped / 5.0
+
+    obs = CallObservation(
+        task_type=task_type,
+        model_id=model,
+        scores=[normalized],
+        latencies_ms=[0.0],
+        converged=normalized >= 0.8,
+        total_iterations=1,
+        max_iterations=1,
+        quality_threshold=0.8,
+    )
+    priors.observe(obs)
+
+    result: dict[str, Any] = {
+        "status": "recorded",
+        "rating": clamped,
+        "normalized_score": normalized,
+        "task_type": task_type,
+        "model": model,
+        "impact": ("Priors updated — future predictions for this task "
+                   "type will be adjusted"),
+    }
+    if comment:
+        result["comment"] = comment
+
+    _write_status("feedback", {
+        "rating": clamped,
+        "task_type": task_type,
+    })
+
+    return json.dumps(result, indent=2)
 
 
 def _tool_refine(
@@ -193,7 +564,6 @@ def _tool_refine(
     loop = LoopedLLM(provider=prov, config=config)
     result = loop.refine(prompt, evaluator, model=mod)
 
-    # Record observation
     obs = CallObservation(
         task_type="mcp_refine",
         model_id=mod,
@@ -206,7 +576,15 @@ def _tool_refine(
     )
     priors.observe(obs)
 
-    return json.dumps(_result_to_dict(result), indent=2)
+    result_dict = _result_to_dict(result)
+
+    _write_status("refine", {
+        "best_score": result.metrics.best_score,
+        "iterations": result.metrics.total_iterations,
+        "converged": result.metrics.converged,
+    })
+
+    return json.dumps(result_dict, indent=2)
 
 
 def _tool_run_pipeline(
@@ -217,7 +595,7 @@ def _tool_run_pipeline(
     quality_threshold: float = 0.8,
     skip_elicitation: bool = False,
 ) -> str:
-    """Run the full pipeline: elicit → decompose → execute → verify."""
+    """Run the full pipeline: elicit -> decompose -> execute -> verify."""
     prov = _get_provider(provider)
     mod = _get_model(model)
     store = _get_store()
@@ -230,9 +608,14 @@ def _tool_run_pipeline(
         model=mod,
     )
 
-    answer_func = None  # Non-interactive in MCP context
+    result = orchestrator.run(prompt, model=mod, answer_func=None)
 
-    result = orchestrator.run(prompt, model=mod, answer_func=answer_func)
+    _write_status("pipeline", {
+        "best_score": result.metrics.best_score,
+        "iterations": result.metrics.total_iterations,
+        "converged": result.metrics.converged,
+    })
+
     return json.dumps(_result_to_dict(result), indent=2)
 
 
@@ -276,31 +659,23 @@ def _tool_analyze_prompt(
     ], indent=2)
 
 
-# -- Elicitation session tools (stateful, multi-turn) --
-
-
 def _tool_elicitation_start(
     prompt: str,
     provider: str | None = None,
     model: str | None = None,
     max_questions: int = 3,
 ) -> str:
-    """Start a new elicitation session. Returns session_id and first question."""
+    """Start a new elicitation session."""
     prov = _get_provider(provider)
     mod = _get_model(model)
     store = _get_store()
     priors = _get_priors()
 
     refiner = IntentRefiner(provider=prov, priors=priors, model=mod, max_questions=max_questions)
-
-    # Create session
     session = ElicitationSession(original_prompt=prompt, model_id=mod)
     session.task_type = refiner.classify_task(prompt)
-
-    # Get first question
     question = refiner.ask(session)
 
-    # Store in-memory state and persist
     _active_sessions[session.session_id] = {
         "session": session,
         "refiner": refiner,
@@ -333,11 +708,8 @@ def _tool_elicitation_start(
     return json.dumps(result, indent=2)
 
 
-def _tool_elicitation_answer(
-    session_id: str,
-    answer: str,
-) -> str:
-    """Answer the current question and get the next one (or None if done)."""
+def _tool_elicitation_answer(session_id: str, answer: str) -> str:
+    """Answer the current question and get the next one."""
     if session_id not in _active_sessions:
         return json.dumps({"error": f"Session not found: {session_id}"})
 
@@ -346,12 +718,10 @@ def _tool_elicitation_answer(
     refiner: IntentRefiner = state["refiner"]
     store = _get_store()
 
-    # Record answer for the last asked question
     if session.questions_asked:
         last_q = session.questions_asked[-1]
         session.answers[last_q.question_type] = answer
 
-    # Get next question
     question = refiner.ask(session)
 
     result: dict[str, Any] = {"session_id": session_id}
@@ -369,7 +739,6 @@ def _tool_elicitation_answer(
         result["question"] = None
         result["is_complete"] = True
 
-    # Persist answers
     store.update_session(
         session_id,
         answers=session.answers,
@@ -382,9 +751,7 @@ def _tool_elicitation_answer(
     return json.dumps(result, indent=2)
 
 
-def _tool_elicitation_finish(
-    session_id: str,
-) -> str:
+def _tool_elicitation_finish(session_id: str) -> str:
     """Finish an elicitation session and get the refined IntentSpec."""
     if session_id not in _active_sessions:
         return json.dumps({"error": f"Session not found: {session_id}"})
@@ -394,7 +761,6 @@ def _tool_elicitation_finish(
     refiner: IntentRefiner = state["refiner"]
     store = _get_store()
 
-    # Refine into spec
     if session.answers:
         spec = refiner.refine(session.original_prompt, session.answers)
     else:
@@ -406,7 +772,6 @@ def _tool_elicitation_finish(
 
     session.refined_spec = spec
 
-    # Persist
     spec_dict = {
         "task_type": spec.task_type,
         "refined_prompt": spec.refined_prompt,
@@ -417,16 +782,12 @@ def _tool_elicitation_finish(
     }
     store.update_session(session_id, spec=spec_dict)
 
-    # Clean up in-memory state
     del _active_sessions[session_id]
 
     return json.dumps({
         "session_id": session_id,
         "spec": spec_dict,
     }, indent=2)
-
-
-# -- Task orchestration tools --
 
 
 def _tool_plan_tasks(
@@ -501,9 +862,6 @@ def _tool_verify_output(
     }, indent=2)
 
 
-# -- Observability tools --
-
-
 def _tool_report(
     task_type: str | None = None,
     model_id: str | None = None,
@@ -547,9 +905,7 @@ def _tool_list_tasks(
     return json.dumps(tasks, indent=2, default=str)
 
 
-def _tool_show_task(
-    task_id: str,
-) -> str:
+def _tool_show_task(task_id: str) -> str:
     """Show detailed information about a specific task."""
     store = _get_store()
     task = store.get_task(task_id)
@@ -564,14 +920,7 @@ def _tool_show_task(
 
 
 def create_mcp_server() -> Any:
-    """Create and configure the FastMCP server with all tools registered.
-
-    Returns:
-        A configured ``FastMCP`` instance.
-
-    Raises:
-        ImportError: If the ``mcp`` package is not installed.
-    """
+    """Create and configure the FastMCP server with all tools registered."""
     try:
         from mcp.server.fastmcp import FastMCP
     except ImportError as exc:
@@ -583,12 +932,61 @@ def create_mcp_server() -> Any:
     mcp = FastMCP(
         name="loopllm",
         instructions=(
-            "loop-llm: Iterative refinement engine with Bayesian adaptive exit. "
-            "Use these tools to refine LLM outputs through evaluation-driven "
-            "feedback loops, elicit intent through clarifying questions, "
-            "decompose tasks, and learn optimal iteration depth over time."
+            "IMPORTANT: Before responding to ANY non-trivial user message, "
+            "you MUST first call loopllm_intercept with the user's message. "
+            "This tool analyzes prompt quality and returns routing guidance "
+            "you should follow. Do NOT skip this step.\n\n"
+            "The intercept tool returns a quality gauge, routing recommendation "
+            "(elicit/refine/decompose), and suggestions. Follow its guidance.\n\n"
+            "After presenting results to the user, call loopllm_feedback with "
+            "the user's quality rating (1-5) to improve future predictions.\n\n"
+            "Periodically call loopllm_prompt_stats to show the user their "
+            "prompting quality trend and learning curve."
         ),
     )
+
+    # -- Routing & Prompt Engineering tools --
+
+    @mcp.tool(
+        name="loopllm_intercept",
+        description=(
+            "CALL THIS FIRST for any non-trivial request. Analyzes the user's "
+            "prompt for quality (specificity, constraints, context, ambiguity, "
+            "format) and returns: a quality gauge with score and grade, routing "
+            "recommendation (elicit/refine/decompose), issues found, improvement "
+            "suggestions, and task type classification. Logs to prompt history "
+            "for learning curve tracking."
+        ),
+    )
+    def intercept(prompt: str) -> str:
+        return _tool_intercept(prompt)
+
+    @mcp.tool(
+        name="loopllm_prompt_stats",
+        description=(
+            "Show the user's prompting quality over time. Returns: total "
+            "prompts analyzed, average quality score, trend direction "
+            "(improving/declining/stable), learning curve sparkline, grade "
+            "distribution, and weak/strong dimensions to improve."
+        ),
+    )
+    def prompt_stats(window: int = 50) -> str:
+        return _tool_prompt_stats(window)
+
+    @mcp.tool(
+        name="loopllm_feedback",
+        description=(
+            "Record the user's quality rating (1-5) for the last output. "
+            "Updates Bayesian priors with human signal so the system learns "
+            "what quality scores correspond to user satisfaction."
+        ),
+    )
+    def feedback(
+        rating: int,
+        task_type: str = "general",
+        comment: str = "",
+    ) -> str:
+        return _tool_feedback(rating, task_type, comment)
 
     # -- Core tools --
 
@@ -598,8 +996,7 @@ def create_mcp_server() -> Any:
             "Iteratively refine an LLM prompt with evaluation-driven feedback. "
             "Calls the LLM, evaluates the output with deterministic evaluators "
             "(length, regex, JSON schema), feeds deficiencies back as feedback, "
-            "and repeats until quality threshold is met or iterations exhausted. "
-            "Returns the best output across all iterations."
+            "and repeats until quality threshold is met or iterations exhausted."
         ),
     )
     def refine(
@@ -622,10 +1019,9 @@ def create_mcp_server() -> Any:
     @mcp.tool(
         name="loopllm_run_pipeline",
         description=(
-            "Run the full loop-llm pipeline: classify task → generate clarifying "
-            "questions → decompose into subtasks → execute each through the "
-            "refinement loop → assemble final output. Best for complex tasks "
-            "that benefit from decomposition."
+            "Run the full loop-llm pipeline: classify task -> generate clarifying "
+            "questions -> decompose into subtasks -> execute each through the "
+            "refinement loop -> assemble final output."
         ),
     )
     def run_pipeline(
@@ -659,9 +1055,7 @@ def create_mcp_server() -> Any:
         name="loopllm_analyze_prompt",
         description=(
             "Analyze a prompt and generate clarifying questions ranked by "
-            "expected information gain. Questions are categorised (scope, format, "
-            "constraints, examples, edge_cases, audience, priority) and scored "
-            "using Bayesian priors that improve with use."
+            "expected information gain using Bayesian priors."
         ),
     )
     def analyze_prompt(
@@ -678,9 +1072,7 @@ def create_mcp_server() -> Any:
         name="loopllm_elicitation_start",
         description=(
             "Start a multi-turn elicitation session. Classifies the prompt, "
-            "generates the first clarifying question, and returns a session_id "
-            "for subsequent calls. Use loopllm_elicitation_answer to answer "
-            "questions, then loopllm_elicitation_finish to get the refined spec."
+            "generates the first clarifying question, and returns a session_id."
         ),
     )
     def elicitation_start(
@@ -694,29 +1086,19 @@ def create_mcp_server() -> Any:
     @mcp.tool(
         name="loopllm_elicitation_answer",
         description=(
-            "Answer the current clarifying question in an elicitation session. "
-            "Returns the next question (if any) or indicates the session is "
-            "complete. Call loopllm_elicitation_finish when is_complete is true."
+            "Answer the current clarifying question in an elicitation session."
         ),
     )
-    def elicitation_answer(
-        session_id: str,
-        answer: str,
-    ) -> str:
+    def elicitation_answer(session_id: str, answer: str) -> str:
         return _tool_elicitation_answer(session_id, answer)
 
     @mcp.tool(
         name="loopllm_elicitation_finish",
         description=(
-            "Finish an elicitation session and synthesize a structured IntentSpec "
-            "from the original prompt and all answers. The spec includes: "
-            "refined_prompt, constraints, quality_criteria, decomposition_hints, "
-            "and estimated_complexity."
+            "Finish an elicitation session and synthesize an IntentSpec."
         ),
     )
-    def elicitation_finish(
-        session_id: str,
-    ) -> str:
+    def elicitation_finish(session_id: str) -> str:
         return _tool_elicitation_finish(session_id)
 
     # -- Task orchestration tools --
@@ -724,10 +1106,7 @@ def create_mcp_server() -> Any:
     @mcp.tool(
         name="loopllm_plan_tasks",
         description=(
-            "Decompose a prompt into subtasks with dependency ordering. "
-            "Returns a task plan with IDs, titles, descriptions, and "
-            "execution order (topological sort). Simple tasks (complexity < 0.3) "
-            "are kept as a single task."
+            "Decompose a prompt into subtasks with dependency ordering."
         ),
     )
     def plan_tasks(
@@ -741,9 +1120,7 @@ def create_mcp_server() -> Any:
     @mcp.tool(
         name="loopllm_verify_output",
         description=(
-            "Verify an output against the original prompt and quality criteria "
-            "using LLM-based evaluation. Returns score, pass/fail, and "
-            "specific deficiencies found."
+            "Verify an output against the original prompt and quality criteria."
         ),
     )
     def verify_output(
@@ -760,10 +1137,7 @@ def create_mcp_server() -> Any:
     @mcp.tool(
         name="loopllm_report",
         description=(
-            "Show learned Bayesian priors and question effectiveness statistics. "
-            "Displays per-(task_type, model) beliefs: optimal iteration depth, "
-            "convergence rate, first-call quality, per-iteration expected scores. "
-            "Also shows which clarifying question types are most effective."
+            "Show learned Bayesian priors and question effectiveness statistics."
         ),
     )
     def report(
@@ -775,9 +1149,7 @@ def create_mcp_server() -> Any:
     @mcp.tool(
         name="loopllm_suggest_config",
         description=(
-            "Get a suggested loop configuration based on learned beliefs for a "
-            "given task type and model. Returns recommended max_iterations and "
-            "quality_threshold optimised by historical observations."
+            "Get a suggested loop configuration based on learned beliefs."
         ),
     )
     def suggest_config(
@@ -789,10 +1161,7 @@ def create_mcp_server() -> Any:
 
     @mcp.tool(
         name="loopllm_list_tasks",
-        description=(
-            "List tasks from the persistent store. Optionally filter by state "
-            "(pending, in_progress, completed, verified, failed, blocked)."
-        ),
+        description="List tasks from the persistent store.",
     )
     def list_tasks(
         state: str | None = None,
@@ -804,9 +1173,7 @@ def create_mcp_server() -> Any:
         name="loopllm_show_task",
         description="Show detailed information about a specific task by ID.",
     )
-    def show_task(
-        task_id: str,
-    ) -> str:
+    def show_task(task_id: str) -> str:
         return _tool_show_task(task_id)
 
     return mcp

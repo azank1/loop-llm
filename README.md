@@ -2,9 +2,9 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**v0.3.0** — A package from [Metaorcha](https://github.com/azank1), a platform currently under development researching planning and discovery. This release collects real-world usage data and validates core abstractions to inform future versions.
+**v0.4.0** — A package from [Metaorcha](https://github.com/azank1), a platform currently under development researching planning and discovery. This release adds a **prompt quality scoring system** with real-time feedback, learning curve tracking, and a VS Code extension with visual gauge.
 
-Iterative refinement engine for LLM applications with Bayesian adaptive exit. Loop any LLM call with pluggable evaluators, learned optimal depth, and cost-aware stopping. Works as an **MCP server** inside VS Code Copilot / Cursor, as a **CLI tool**, or as a **Python library**. Model-agnostic, zero training required.
+Iterative refinement engine for LLM applications with Bayesian adaptive exit. Loop any LLM call with pluggable evaluators, learned optimal depth, and cost-aware stopping. Now with **prompt quality analysis** that scores your prompts, tracks improvement over time, and provides actionable suggestions. Works as an **MCP server** inside VS Code Copilot / Cursor, as a **CLI tool**, or as a **Python library**. Model-agnostic, zero training required.
 
 ---
 
@@ -61,25 +61,76 @@ Add to `.cursor/mcp.json`:
 }
 ```
 
-Once configured, the IDE agent (Copilot, Cursor) can call any of the 13 MCP tools directly in chat.
+Once configured, the IDE agent (Copilot, Cursor) can call any of the 16 MCP tools directly in chat.
 
 ### MCP Tools
 
 | Tool | Description |
 |------|-------------|
+| **Prompt Engineering** | |
+| `loopllm_intercept` | **Call first** — scores prompt quality, classifies task, routes to best tool |
+| `loopllm_prompt_stats` | Show your prompting quality trend, learning curve, and weak areas |
+| `loopllm_feedback` | Rate output quality (1-5) to improve future predictions |
+| **Core Refinement** | |
 | `loopllm_refine` | Iteratively refine a prompt with evaluation-driven feedback |
 | `loopllm_run_pipeline` | Run the full refinement pipeline (classify → plan → refine → verify) |
 | `loopllm_classify_task` | Classify a prompt by task type and complexity |
 | `loopllm_analyze_prompt` | Analyze prompt quality and suggest improvements |
+| **Intent Elicitation** | |
 | `loopllm_elicitation_start` | Start an intent-elicitation session with clarifying questions |
 | `loopllm_elicitation_answer` | Answer a clarifying question in an active session |
 | `loopllm_elicitation_finish` | Finish elicitation and get the refined intent spec |
+| **Task Orchestration** | |
 | `loopllm_plan_tasks` | Decompose a goal into a dependency-ordered task plan |
 | `loopllm_verify_output` | Score output against evaluators and get a quality report |
+| **Observability** | |
 | `loopllm_suggest_config` | Get Bayesian-optimised loop config for a task type |
 | `loopllm_report` | Show refinement history and Bayesian prior statistics |
 | `loopllm_list_tasks` | List recent tasks from the persistent store |
 | `loopllm_show_task` | Show details of a specific task by ID |
+
+### Prompt Quality Gauge
+
+The `loopllm_intercept` tool scores every prompt across five dimensions:
+
+- **Specificity** — how concrete and detailed the request is
+- **Constraint Clarity** — whether output format, length, or requirements are specified
+- **Context Completeness** — background, examples, and goal explanation
+- **Ambiguity** — unclear references (pronouns without antecedents, etc.)
+- **Format Specification** — whether desired output format is stated
+
+The composite score maps to a letter grade (A–F) and an ASCII gauge:
+
+```
+███████░░░ 75% [B]    — good prompt, minor improvements possible
+██░░░░░░░░ 28% [F]    — vague prompt, needs clarification
+█████████░ 92% [A]    — excellent, ready for direct refinement
+```
+
+Based on the score, the tool routes the request:
+- **Score < 0.4** → start elicitation (clarifying questions)
+- **Score 0.4–0.6** → quick elicitation then refinement
+- **Complexity > 0.6** → task decomposition
+- **Score ≥ 0.6** → direct refinement loop
+
+### VS Code Extension
+
+The `vscode-loopllm/` directory contains a companion VS Code extension that provides:
+
+- **Status bar gauge** — color-coded prompt quality indicator (🟢 ≥ 0.7, 🟡 0.5–0.7, 🔴 < 0.5)
+- **Sidebar dashboard** — learning curve chart, dimension radar, suggestions panel
+- **Real-time updates** — watches `~/.loopllm/status.json` for instant feedback
+- **Database polling** — reads SQLite for aggregate trends every 3 seconds
+
+To build and install:
+
+```bash
+cd vscode-loopllm
+npm install
+npm run compile
+npm run package           # creates .vsix file
+code --install-extension loopllm-prompt-gauge-0.1.0.vsix
+```
 
 ## Quick Start — CLI
 

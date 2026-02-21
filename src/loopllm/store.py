@@ -23,7 +23,7 @@ from loopllm.priors import (
 
 logger = structlog.get_logger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -99,6 +99,32 @@ CREATE INDEX IF NOT EXISTS idx_tasks_state
 """
 
 
+_SCHEMA_V2_SQL = """\
+CREATE TABLE IF NOT EXISTS prompt_history (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp       TEXT NOT NULL,
+    prompt_text     TEXT NOT NULL,
+    quality_score   REAL NOT NULL,
+    specificity     REAL NOT NULL DEFAULT 0.0,
+    constraint_clarity REAL NOT NULL DEFAULT 0.0,
+    context_completeness REAL NOT NULL DEFAULT 0.0,
+    ambiguity       REAL NOT NULL DEFAULT 0.0,
+    format_spec     REAL NOT NULL DEFAULT 0.0,
+    task_type       TEXT NOT NULL DEFAULT 'general',
+    complexity      REAL NOT NULL DEFAULT 0.0,
+    route_chosen    TEXT NOT NULL DEFAULT 'refine',
+    word_count      INTEGER NOT NULL DEFAULT 0,
+    grade           TEXT NOT NULL DEFAULT 'C',
+    session_context TEXT NOT NULL DEFAULT 'default'
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_history_ts
+    ON prompt_history(timestamp);
+CREATE INDEX IF NOT EXISTS idx_prompt_history_grade
+    ON prompt_history(grade);
+"""
+
+
 class LoopStore:
     """SQLite-backed store for loop-llm state.
 
@@ -138,6 +164,7 @@ class LoopStore:
             )
             if cursor.fetchone() is None:
                 conn.executescript(_SCHEMA_SQL)
+                conn.executescript(_SCHEMA_V2_SQL)
                 conn.execute(
                     "INSERT INTO schema_version (version) VALUES (?)",
                     (SCHEMA_VERSION,),
@@ -159,7 +186,8 @@ class LoopStore:
             to_v: Target schema version.
         """
         logger.info("store_migrating", from_version=from_v, to_version=to_v)
-        # Future migrations go here as elif blocks
+        if from_v < 2:
+            conn.executescript(_SCHEMA_V2_SQL)
         conn.execute("UPDATE schema_version SET version = ?", (to_v,))
         conn.commit()
 
@@ -642,6 +670,184 @@ class LoopStore:
             "metadata": json.loads(row["metadata_json"]),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
+        }
+
+    # -- prompt history --------------------------------------------------------
+
+    def record_prompt(self, entry: dict[str, Any]) -> int:
+        """Append a prompt quality record to history.
+
+        Args:
+            entry: Dict with prompt analysis data including ``prompt_text``,
+                ``quality_score``, dimension scores, ``task_type``, etc.
+
+        Returns:
+            The auto-generated row ID.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """INSERT INTO prompt_history
+                   (timestamp, prompt_text, quality_score, specificity,
+                    constraint_clarity, context_completeness, ambiguity,
+                    format_spec, task_type, complexity, route_chosen,
+                    word_count, grade, session_context)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    now,
+                    entry.get("prompt_text", ""),
+                    entry.get("quality_score", 0.0),
+                    entry.get("specificity", 0.0),
+                    entry.get("constraint_clarity", 0.0),
+                    entry.get("context_completeness", 0.0),
+                    entry.get("ambiguity", 0.0),
+                    entry.get("format_spec", 0.0),
+                    entry.get("task_type", "general"),
+                    entry.get("complexity", 0.0),
+                    entry.get("route_chosen", "refine"),
+                    entry.get("word_count", 0),
+                    entry.get("grade", "C"),
+                    entry.get("session_context", "default"),
+                ),
+            )
+            conn.commit()
+            return cursor.lastrowid or 0
+
+    def get_prompt_history(
+        self,
+        limit: int = 100,
+        session_context: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Retrieve prompt history records.
+
+        Args:
+            limit: Maximum rows to return.
+            session_context: Optional filter by session context.
+
+        Returns:
+            List of prompt history dicts, most recent first.
+        """
+        if session_context is not None:
+            query = (
+                "SELECT * FROM prompt_history WHERE session_context = ? "
+                "ORDER BY id DESC LIMIT ?"
+            )
+            params: tuple[Any, ...] = (session_context, limit)
+        else:
+            query = "SELECT * FROM prompt_history ORDER BY id DESC LIMIT ?"
+            params = (limit,)
+
+        with self._connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        return [
+            {
+                "id": row["id"],
+                "timestamp": row["timestamp"],
+                "prompt_text": row["prompt_text"],
+                "quality_score": row["quality_score"],
+                "specificity": row["specificity"],
+                "constraint_clarity": row["constraint_clarity"],
+                "context_completeness": row["context_completeness"],
+                "ambiguity": row["ambiguity"],
+                "format_spec": row["format_spec"],
+                "task_type": row["task_type"],
+                "complexity": row["complexity"],
+                "route_chosen": row["route_chosen"],
+                "word_count": row["word_count"],
+                "grade": row["grade"],
+                "session_context": row["session_context"],
+            }
+            for row in rows
+        ]
+
+    def get_prompt_stats(
+        self,
+        window: int = 50,
+        session_context: str | None = None,
+    ) -> dict[str, Any]:
+        """Compute aggregate prompt quality statistics.
+
+        Args:
+            window: Number of recent prompts to consider.
+            session_context: Optional filter by session context.
+
+        Returns:
+            Dict with stats: total, averages, trend, weak/strong areas.
+        """
+        history = self.get_prompt_history(limit=window, session_context=session_context)
+
+        if not history:
+            return {
+                "total_prompts": 0,
+                "avg_quality": 0.0,
+                "trend": "no_data",
+                "grade_distribution": {},
+                "learning_curve": [],
+                "weak_areas": [],
+                "strong_areas": [],
+            }
+
+        # Reverse to chronological order
+        history = list(reversed(history))
+
+        scores = [h["quality_score"] for h in history]
+        total = len(scores)
+
+        # Compute avg for recent vs older
+        avg_all = sum(scores) / total
+        recent_10 = scores[-10:] if total >= 10 else scores
+        avg_recent = sum(recent_10) / len(recent_10)
+
+        if total >= 10:
+            older_10 = scores[:10]
+            avg_older = sum(older_10) / len(older_10)
+            if avg_recent > avg_older + 0.05:
+                trend = "improving"
+            elif avg_recent < avg_older - 0.05:
+                trend = "declining"
+            else:
+                trend = "stable"
+        else:
+            trend = "insufficient_data"
+
+        # Grade distribution
+        grades: dict[str, int] = {}
+        for h in history:
+            g = h["grade"]
+            grades[g] = grades.get(g, 0) + 1
+
+        # Dimension averages
+        dims = {
+            "specificity": [h["specificity"] for h in history],
+            "constraint_clarity": [h["constraint_clarity"] for h in history],
+            "context_completeness": [h["context_completeness"] for h in history],
+            "format_spec": [h["format_spec"] for h in history],
+        }
+        dim_avgs = {k: sum(v) / len(v) for k, v in dims.items()}
+
+        # Weak/strong
+        sorted_dims = sorted(dim_avgs.items(), key=lambda x: x[1])
+        weak = [d[0] for d in sorted_dims[:2] if d[1] < 0.6]
+        strong = [d[0] for d in sorted_dims[-2:] if d[1] >= 0.6]
+
+        # Learning curve (group by chunks of 5)
+        curve: list[float] = []
+        chunk_size = max(1, total // 10) if total >= 10 else 1
+        for i in range(0, total, chunk_size):
+            chunk = scores[i: i + chunk_size]
+            curve.append(round(sum(chunk) / len(chunk), 3))
+
+        return {
+            "total_prompts": total,
+            "avg_quality": round(avg_all, 3),
+            "avg_quality_recent_10": round(avg_recent, 3),
+            "trend": trend,
+            "grade_distribution": grades,
+            "learning_curve": curve,
+            "dimension_averages": dim_avgs,
+            "weak_areas": weak,
+            "strong_areas": strong,
         }
 
     # -- serialization helpers -----------------------------------------------
