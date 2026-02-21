@@ -1,5 +1,7 @@
 # loop-llm
 
+[![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=22&pause=1000&color=00CFFF&center=true&vCenter=true&width=700&lines=Iterative+Prompt+Refinement+Engine;Bayesian+Adaptive+Exit+%2B+Cost-Aware+Stopping;MCP+Server+%E2%80%94+16+Tools+for+VS+Code+%2B+Cursor;Prompt+Quality+Scoring+%2B+Learning+Curve;Intent+Elicitation+%2B+Task+Decomposition;Zero+Training+%E2%80%94+Model+Agnostic)](https://github.com/azank1/loop-llm)
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **A prompt observer and quality loop for your AI agent.**
