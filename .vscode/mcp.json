@@ -5,7 +5,8 @@
       "command": "loopllm",
       "args": ["mcp-server", "--provider", "ollama"],
       "env": {
-        "LOOPLLM_MODEL": "qwen2.5:0.5b"
+        "LOOPLLM_MODEL": "qwen2.5:0.5b",
+        "OLLAMA_HOST": "http://localhost:11434"
       }
     }
   }

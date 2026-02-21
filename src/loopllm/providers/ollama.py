@@ -62,6 +62,7 @@ class OllamaProvider(LLMProvider):
         response = httpx.post(
             f"{self.base_url}/api/chat",
             json=payload,
+            timeout=120.0,
         )
         latency_ms = (time.perf_counter() - t0) * 1000.0
 
