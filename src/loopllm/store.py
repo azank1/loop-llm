@@ -1,0 +1,760 @@
+"""SQLite-backed persistence for priors, observations, and sessions."""
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+from contextlib import contextmanager
+from dataclasses import asdict
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterator
+
+import structlog
+
+from loopllm.priors import (
+    AdaptivePriors,
+    BetaPrior,
+    CallObservation,
+    IterationProfile,
+    NormalPrior,
+    TaskModelPrior,
+)
+
+logger = structlog.get_logger(__name__)
+
+SCHEMA_VERSION = 1
+
+_SCHEMA_SQL = """\
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS priors (
+    key         TEXT PRIMARY KEY,
+    task_type   TEXT NOT NULL,
+    model_id    TEXT NOT NULL,
+    data        TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS observations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_type   TEXT NOT NULL,
+    model_id    TEXT NOT NULL,
+    data        TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS questions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_type   TEXT NOT NULL,
+    task_type       TEXT NOT NULL,
+    asked_count     INTEGER NOT NULL DEFAULT 0,
+    positive_impact INTEGER NOT NULL DEFAULT 0,
+    negative_impact INTEGER NOT NULL DEFAULT 0,
+    avg_info_gain   REAL NOT NULL DEFAULT 0.0,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id      TEXT PRIMARY KEY,
+    original_prompt TEXT NOT NULL,
+    task_type       TEXT,
+    model_id        TEXT,
+    questions_json  TEXT NOT NULL DEFAULT '[]',
+    answers_json    TEXT NOT NULL DEFAULT '{}',
+    spec_json       TEXT,
+    final_score     REAL,
+    created_at      TEXT NOT NULL,
+    completed_at    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id              TEXT PRIMARY KEY,
+    parent_id       TEXT,
+    session_id      TEXT,
+    title           TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    state           TEXT NOT NULL DEFAULT 'pending',
+    dependencies    TEXT NOT NULL DEFAULT '[]',
+    spec_json       TEXT,
+    result_json     TEXT,
+    metadata_json   TEXT NOT NULL DEFAULT '{}',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    FOREIGN KEY (parent_id) REFERENCES tasks(id),
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_observations_task_model
+    ON observations(task_type, model_id);
+CREATE INDEX IF NOT EXISTS idx_questions_type
+    ON questions(question_type, task_type);
+CREATE INDEX IF NOT EXISTS idx_tasks_session
+    ON tasks(session_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_state
+    ON tasks(state);
+"""
+
+
+class LoopStore:
+    """SQLite-backed store for loop-llm state.
+
+    Thread-safe via a reentrant lock around all database operations.
+    Uses WAL journal mode for concurrent read performance.
+
+    Args:
+        db_path: Path to the SQLite database file.  Use ``":memory:"``
+            for an ephemeral in-memory store (useful for testing).
+    """
+
+    def __init__(self, db_path: Path | str = ":memory:") -> None:
+        self.db_path = str(db_path)
+        self._lock = threading.RLock()
+        self._conn: sqlite3.Connection | None = None
+        self._ensure_schema()
+
+    # -- connection management -----------------------------------------------
+
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        """Yield a thread-safe connection with WAL mode enabled."""
+        with self._lock:
+            if self._conn is None:
+                self._conn = sqlite3.connect(self.db_path)
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA foreign_keys=ON")
+                self._conn.row_factory = sqlite3.Row
+            yield self._conn
+
+    def _ensure_schema(self) -> None:
+        """Create tables or run migrations as needed."""
+        with self._connection() as conn:
+            # Check if schema_version table exists
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
+            )
+            if cursor.fetchone() is None:
+                conn.executescript(_SCHEMA_SQL)
+                conn.execute(
+                    "INSERT INTO schema_version (version) VALUES (?)",
+                    (SCHEMA_VERSION,),
+                )
+                conn.commit()
+                logger.debug("store_schema_created", version=SCHEMA_VERSION)
+            else:
+                row = conn.execute("SELECT version FROM schema_version").fetchone()
+                current = row["version"] if row else 0
+                if current < SCHEMA_VERSION:
+                    self._migrate(conn, current, SCHEMA_VERSION)
+
+    def _migrate(self, conn: sqlite3.Connection, from_v: int, to_v: int) -> None:
+        """Run schema migrations from *from_v* to *to_v*.
+
+        Args:
+            conn: Active database connection.
+            from_v: Current schema version.
+            to_v: Target schema version.
+        """
+        logger.info("store_migrating", from_version=from_v, to_version=to_v)
+        # Future migrations go here as elif blocks
+        conn.execute("UPDATE schema_version SET version = ?", (to_v,))
+        conn.commit()
+
+    def close(self) -> None:
+        """Close the database connection."""
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
+
+    # -- priors CRUD ---------------------------------------------------------
+
+    def save_prior(self, key: str, prior: TaskModelPrior) -> None:
+        """Upsert a serialised :class:`TaskModelPrior`.
+
+        Args:
+            key: Storage key (typically ``task_type::model_id``).
+            prior: The prior to persist.
+        """
+        data = self._serialize_task_model_prior(prior)
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                """INSERT INTO priors (key, task_type, model_id, data, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET
+                       data = excluded.data,
+                       updated_at = excluded.updated_at""",
+                (key, prior.task_type, prior.model_id, json.dumps(data), now, now),
+            )
+            conn.commit()
+
+    def load_prior(self, key: str) -> TaskModelPrior | None:
+        """Load a :class:`TaskModelPrior` by key.
+
+        Args:
+            key: Storage key (typically ``task_type::model_id``).
+
+        Returns:
+            The deserialized prior, or ``None`` if not found.
+        """
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT data FROM priors WHERE key = ?", (key,)
+            ).fetchone()
+        if row is None:
+            return None
+        return self._deserialize_task_model_prior(json.loads(row["data"]))
+
+    def load_all_priors(self) -> dict[str, TaskModelPrior]:
+        """Load every stored prior.
+
+        Returns:
+            Dict mapping keys to :class:`TaskModelPrior` instances.
+        """
+        with self._connection() as conn:
+            rows = conn.execute("SELECT key, data FROM priors").fetchall()
+        result: dict[str, TaskModelPrior] = {}
+        for row in rows:
+            result[row["key"]] = self._deserialize_task_model_prior(
+                json.loads(row["data"])
+            )
+        return result
+
+    def delete_prior(self, key: str) -> bool:
+        """Delete a prior by key.
+
+        Args:
+            key: Storage key to delete.
+
+        Returns:
+            True if a row was deleted.
+        """
+        with self._connection() as conn:
+            cursor = conn.execute("DELETE FROM priors WHERE key = ?", (key,))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    # -- observations --------------------------------------------------------
+
+    def record_observation(self, obs: CallObservation) -> int:
+        """Append an observation to the log.
+
+        Args:
+            obs: The observation to record.
+
+        Returns:
+            The auto-generated row ID.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        data = asdict(obs)
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """INSERT INTO observations (task_type, model_id, data, recorded_at)
+                   VALUES (?, ?, ?, ?)""",
+                (obs.task_type, obs.model_id, json.dumps(data), now),
+            )
+            conn.commit()
+            return cursor.lastrowid or 0
+
+    def get_observations(
+        self,
+        task_type: str | None = None,
+        model_id: str | None = None,
+        limit: int = 100,
+    ) -> list[CallObservation]:
+        """Query observations with optional filters.
+
+        Args:
+            task_type: Filter by task type (optional).
+            model_id: Filter by model ID (optional).
+            limit: Maximum rows to return.
+
+        Returns:
+            List of :class:`CallObservation` instances, most recent first.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if task_type is not None:
+            clauses.append("task_type = ?")
+            params.append(task_type)
+        if model_id is not None:
+            clauses.append("model_id = ?")
+            params.append(model_id)
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        query = f"SELECT data FROM observations {where} ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+
+        with self._connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        results: list[CallObservation] = []
+        for row in rows:
+            d = json.loads(row["data"])
+            results.append(CallObservation(**d))
+        return results
+
+    def count_observations(
+        self, task_type: str | None = None, model_id: str | None = None
+    ) -> int:
+        """Count observations with optional filters.
+
+        Args:
+            task_type: Filter by task type (optional).
+            model_id: Filter by model ID (optional).
+
+        Returns:
+            Row count.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if task_type is not None:
+            clauses.append("task_type = ?")
+            params.append(task_type)
+        if model_id is not None:
+            clauses.append("model_id = ?")
+            params.append(model_id)
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        query = f"SELECT COUNT(*) as cnt FROM observations {where}"
+
+        with self._connection() as conn:
+            row = conn.execute(query, params).fetchone()
+        return row["cnt"] if row else 0
+
+    # -- question effectiveness tracking -------------------------------------
+
+    def update_question_stats(
+        self,
+        question_type: str,
+        task_type: str,
+        *,
+        positive: bool,
+        info_gain: float = 0.0,
+    ) -> None:
+        """Update effectiveness statistics for a question type.
+
+        Args:
+            question_type: Category of the question (e.g. ``"scope"``).
+            task_type: Task type context in which it was asked.
+            positive: Whether the question had a positive impact on outcome.
+            info_gain: Measured information gain from the answer.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connection() as conn:
+            existing = conn.execute(
+                "SELECT id, asked_count, positive_impact, negative_impact, avg_info_gain "
+                "FROM questions WHERE question_type = ? AND task_type = ?",
+                (question_type, task_type),
+            ).fetchone()
+
+            if existing is None:
+                conn.execute(
+                    """INSERT INTO questions
+                       (question_type, task_type, asked_count, positive_impact,
+                        negative_impact, avg_info_gain, updated_at)
+                       VALUES (?, ?, 1, ?, ?, ?, ?)""",
+                    (
+                        question_type,
+                        task_type,
+                        1 if positive else 0,
+                        0 if positive else 1,
+                        info_gain,
+                        now,
+                    ),
+                )
+            else:
+                new_count = existing["asked_count"] + 1
+                new_pos = existing["positive_impact"] + (1 if positive else 0)
+                new_neg = existing["negative_impact"] + (0 if positive else 1)
+                # Running average of info gain
+                old_avg = existing["avg_info_gain"]
+                new_avg = old_avg + (info_gain - old_avg) / new_count
+                conn.execute(
+                    """UPDATE questions SET
+                           asked_count = ?, positive_impact = ?, negative_impact = ?,
+                           avg_info_gain = ?, updated_at = ?
+                       WHERE id = ?""",
+                    (new_count, new_pos, new_neg, new_avg, now, existing["id"]),
+                )
+            conn.commit()
+
+    def get_question_stats(
+        self, task_type: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Retrieve question effectiveness statistics.
+
+        Args:
+            task_type: Optional filter by task type.
+
+        Returns:
+            List of dicts with question stats.
+        """
+        if task_type is not None:
+            query = "SELECT * FROM questions WHERE task_type = ? ORDER BY avg_info_gain DESC"
+            params: tuple[Any, ...] = (task_type,)
+        else:
+            query = "SELECT * FROM questions ORDER BY avg_info_gain DESC"
+            params = ()
+
+        with self._connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        return [
+            {
+                "question_type": row["question_type"],
+                "task_type": row["task_type"],
+                "asked_count": row["asked_count"],
+                "positive_impact": row["positive_impact"],
+                "negative_impact": row["negative_impact"],
+                "avg_info_gain": row["avg_info_gain"],
+                "effectiveness": (
+                    row["positive_impact"] / row["asked_count"]
+                    if row["asked_count"] > 0
+                    else 0.0
+                ),
+            }
+            for row in rows
+        ]
+
+    # -- session management --------------------------------------------------
+
+    def create_session(
+        self,
+        session_id: str,
+        original_prompt: str,
+        task_type: str | None = None,
+        model_id: str | None = None,
+    ) -> None:
+        """Create a new elicitation session.
+
+        Args:
+            session_id: Unique session identifier.
+            original_prompt: The user's original prompt.
+            task_type: Optional task type classification.
+            model_id: Optional model being used.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                """INSERT INTO sessions
+                   (session_id, original_prompt, task_type, model_id, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (session_id, original_prompt, task_type, model_id, now),
+            )
+            conn.commit()
+
+    def update_session(
+        self,
+        session_id: str,
+        *,
+        questions: list[dict[str, Any]] | None = None,
+        answers: dict[str, str] | None = None,
+        spec: dict[str, Any] | None = None,
+        final_score: float | None = None,
+    ) -> None:
+        """Update fields on an existing session.
+
+        Args:
+            session_id: Session to update.
+            questions: Updated questions list.
+            answers: Updated answers dict.
+            spec: The refined IntentSpec as a dict.
+            final_score: Final quality score achieved.
+        """
+        updates: list[str] = []
+        params: list[Any] = []
+
+        if questions is not None:
+            updates.append("questions_json = ?")
+            params.append(json.dumps(questions))
+        if answers is not None:
+            updates.append("answers_json = ?")
+            params.append(json.dumps(answers))
+        if spec is not None:
+            updates.append("spec_json = ?")
+            params.append(json.dumps(spec))
+        if final_score is not None:
+            updates.append("final_score = ?")
+            params.append(final_score)
+            updates.append("completed_at = ?")
+            params.append(datetime.now(timezone.utc).isoformat())
+
+        if not updates:
+            return
+
+        params.append(session_id)
+        sql = f"UPDATE sessions SET {', '.join(updates)} WHERE session_id = ?"
+
+        with self._connection() as conn:
+            conn.execute(sql, params)
+            conn.commit()
+
+    def get_session(self, session_id: str) -> dict[str, Any] | None:
+        """Retrieve a session by ID.
+
+        Args:
+            session_id: Session identifier.
+
+        Returns:
+            Session data as a dict, or ``None``.
+        """
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "session_id": row["session_id"],
+            "original_prompt": row["original_prompt"],
+            "task_type": row["task_type"],
+            "model_id": row["model_id"],
+            "questions": json.loads(row["questions_json"]),
+            "answers": json.loads(row["answers_json"]),
+            "spec": json.loads(row["spec_json"]) if row["spec_json"] else None,
+            "final_score": row["final_score"],
+            "created_at": row["created_at"],
+            "completed_at": row["completed_at"],
+        }
+
+    # -- task management -----------------------------------------------------
+
+    def save_task(self, task_data: dict[str, Any]) -> None:
+        """Insert or update a task record.
+
+        Args:
+            task_data: Dict with keys matching the ``tasks`` table columns.
+                Must include ``id`` and ``title``.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                """INSERT INTO tasks
+                   (id, parent_id, session_id, title, description, state,
+                    dependencies, spec_json, result_json, metadata_json,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       state = excluded.state,
+                       result_json = excluded.result_json,
+                       metadata_json = excluded.metadata_json,
+                       updated_at = excluded.updated_at""",
+                (
+                    task_data["id"],
+                    task_data.get("parent_id"),
+                    task_data.get("session_id"),
+                    task_data["title"],
+                    task_data.get("description", ""),
+                    task_data.get("state", "pending"),
+                    json.dumps(task_data.get("dependencies", [])),
+                    json.dumps(task_data.get("spec")) if task_data.get("spec") else None,
+                    json.dumps(task_data.get("result")) if task_data.get("result") else None,
+                    json.dumps(task_data.get("metadata", {})),
+                    task_data.get("created_at", now),
+                    now,
+                ),
+            )
+            conn.commit()
+
+    def get_task(self, task_id: str) -> dict[str, Any] | None:
+        """Retrieve a task by ID.
+
+        Args:
+            task_id: Task identifier.
+
+        Returns:
+            Task data as a dict, or ``None``.
+        """
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_task(row)
+
+    def get_tasks(
+        self,
+        session_id: str | None = None,
+        state: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Query tasks with optional filters.
+
+        Args:
+            session_id: Filter by session.
+            state: Filter by state.
+            limit: Maximum rows to return.
+
+        Returns:
+            List of task dicts, most recently updated first.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if state is not None:
+            clauses.append("state = ?")
+            params.append(state)
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        query = f"SELECT * FROM tasks {where} ORDER BY updated_at DESC LIMIT ?"
+        params.append(limit)
+
+        with self._connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [self._row_to_task(row) for row in rows]
+
+    def update_task_state(self, task_id: str, state: str) -> None:
+        """Update the state of a task.
+
+        Args:
+            task_id: Task identifier.
+            state: New state value.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                "UPDATE tasks SET state = ?, updated_at = ? WHERE id = ?",
+                (state, now, task_id),
+            )
+            conn.commit()
+
+    @staticmethod
+    def _row_to_task(row: sqlite3.Row) -> dict[str, Any]:
+        """Convert a database row to a task dict."""
+        return {
+            "id": row["id"],
+            "parent_id": row["parent_id"],
+            "session_id": row["session_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "state": row["state"],
+            "dependencies": json.loads(row["dependencies"]),
+            "spec": json.loads(row["spec_json"]) if row["spec_json"] else None,
+            "result": json.loads(row["result_json"]) if row["result_json"] else None,
+            "metadata": json.loads(row["metadata_json"]),
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    # -- serialization helpers -----------------------------------------------
+
+    @staticmethod
+    def _serialize_normal(p: NormalPrior) -> dict[str, Any]:
+        return {
+            "mean": p.mean,
+            "variance": p.variance,
+            "n_observations": p.n_observations,
+            "_m2": p._m2,
+            "decay": p.decay,
+        }
+
+    @staticmethod
+    def _deserialize_normal(d: dict[str, Any]) -> NormalPrior:
+        return NormalPrior(**d)
+
+    @staticmethod
+    def _serialize_beta(p: BetaPrior) -> dict[str, Any]:
+        return {"alpha": p.alpha, "beta": p.beta}
+
+    @staticmethod
+    def _deserialize_beta(d: dict[str, Any]) -> BetaPrior:
+        return BetaPrior(**d)
+
+    def _serialize_task_model_prior(self, prior: TaskModelPrior) -> dict[str, Any]:
+        """Serialise a :class:`TaskModelPrior` to a JSON-safe dict."""
+        iterations_data: dict[str, Any] = {}
+        for k, profile in prior.iterations.items():
+            iterations_data[str(k)] = {
+                "score": self._serialize_normal(profile.score),
+                "score_delta": self._serialize_normal(profile.score_delta),
+                "converge_prob": self._serialize_beta(profile.converge_prob),
+                "latency_ms": self._serialize_normal(profile.latency_ms),
+            }
+        return {
+            "task_type": prior.task_type,
+            "model_id": prior.model_id,
+            "created_at": prior.created_at,
+            "updated_at": prior.updated_at,
+            "total_calls": prior.total_calls,
+            "iterations": iterations_data,
+            "optimal_depth": self._serialize_normal(prior.optimal_depth),
+            "overall_converge_rate": self._serialize_beta(prior.overall_converge_rate),
+            "first_call_quality": self._serialize_normal(prior.first_call_quality),
+        }
+
+    def _deserialize_task_model_prior(self, data: dict[str, Any]) -> TaskModelPrior:
+        """Deserialise a JSON dict back into a :class:`TaskModelPrior`."""
+        iterations: dict[int, IterationProfile] = {}
+        for k_str, idata in data.get("iterations", {}).items():
+            iterations[int(k_str)] = IterationProfile(
+                score=self._deserialize_normal(idata["score"]),
+                score_delta=self._deserialize_normal(idata["score_delta"]),
+                converge_prob=self._deserialize_beta(idata["converge_prob"]),
+                latency_ms=self._deserialize_normal(idata["latency_ms"]),
+            )
+        return TaskModelPrior(
+            task_type=data["task_type"],
+            model_id=data["model_id"],
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            total_calls=data["total_calls"],
+            iterations=iterations,
+            optimal_depth=self._deserialize_normal(data["optimal_depth"]),
+            overall_converge_rate=self._deserialize_beta(data["overall_converge_rate"]),
+            first_call_quality=self._deserialize_normal(data["first_call_quality"]),
+        )
+
+
+class SQLiteBackedPriors(AdaptivePriors):
+    """Drop-in replacement for :class:`AdaptivePriors` backed by SQLite.
+
+    Extends the base class but replaces the JSON file persistence with
+    :class:`LoopStore`.  The in-memory prior dict is kept synchronised
+    with the database.
+
+    Args:
+        store: The :class:`LoopStore` to use for persistence.
+    """
+
+    def __init__(self, store: LoopStore) -> None:
+        # Bypass the parent __init__ to avoid JSON file loading
+        self.store_path = None
+        self._priors: dict[str, TaskModelPrior] = {}
+        self._store = store
+        self._load_from_store()
+
+    def _load_from_store(self) -> None:
+        """Load all priors from the SQLite store into memory."""
+        self._priors = self._store.load_all_priors()
+
+    def observe(self, observation: CallObservation) -> None:
+        """Record an observation, updating both memory and database.
+
+        Args:
+            observation: The observation to incorporate.
+        """
+        # Use parent observe to update in-memory priors
+        super().observe(observation)
+        # Also log the raw observation
+        self._store.record_observation(observation)
+        # Persist the updated prior
+        key = self._key(observation.task_type, observation.model_id)
+        if key in self._priors:
+            self._store.save_prior(key, self._priors[key])
+
+    def _save(self) -> None:
+        """Persist all priors to SQLite."""
+        for key, prior in self._priors.items():
+            self._store.save_prior(key, prior)
+
+    def _load(self) -> None:
+        """Load all priors from SQLite."""
+        self._load_from_store()

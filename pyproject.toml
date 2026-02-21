@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "loopllm"
-version = "0.1.0"
-description = "Iterative refinement engine for LLM applications with Bayesian adaptive exit."
+version = "0.2.0"
+description = "Iterative refinement engine for LLM applications with Bayesian adaptive exit and intent elicitation."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -31,12 +31,18 @@ dev = [
     "mypy>=1.10.0",
 ]
 
+[project.scripts]
+loopllm = "loopllm.cli:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/loopllm"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "integration: tests that require live LLM API access (deselect with '-m \"not integration\"')",
+]
 
 [tool.ruff]
 line-length = 100

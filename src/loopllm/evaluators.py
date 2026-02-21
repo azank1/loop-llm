@@ -282,3 +282,138 @@ class LengthEvaluator:
             deficiencies=deficiencies,
             sub_scores={"length": score},
         )
+
+
+class ConsistencyEvaluator:
+    """Evaluator that checks consistency between a subtask result and its dependencies.
+
+    Verifies that the output references or is consistent with the provided
+    dependency outputs.  Uses keyword overlap as a lightweight proxy for
+    semantic consistency.
+
+    Args:
+        dependency_outputs: List of output strings from dependency tasks.
+        min_overlap: Minimum fraction of dependency keywords that must
+            appear in the output.
+    """
+
+    def __init__(
+        self,
+        dependency_outputs: list[str],
+        min_overlap: float = 0.1,
+    ) -> None:
+        self.dependency_outputs = dependency_outputs
+        self.min_overlap = min_overlap
+        self._dep_keywords: list[set[str]] = [
+            self._extract_keywords(output) for output in dependency_outputs
+        ]
+
+    @staticmethod
+    def _extract_keywords(text: str) -> set[str]:
+        """Extract significant keywords from text (words >= 4 chars)."""
+        words = re.findall(r"\b[a-zA-Z_]\w{3,}\b", text.lower())
+        # Filter common stop words
+        stop = {
+            "that", "this", "with", "from", "have", "been", "will", "would",
+            "could", "should", "which", "their", "there", "about", "after",
+            "than", "them", "then", "were", "when", "what", "your", "also",
+            "into", "each", "only", "other", "some", "such", "more", "very",
+        }
+        return {w for w in words if w not in stop}
+
+    def evaluate(self, output: str, context: dict[str, Any] | None = None) -> EvaluationResult:
+        """Check *output* for consistency with dependency outputs.
+
+        Args:
+            output: The text to evaluate.
+            context: Unused; accepted for interface compatibility.
+
+        Returns:
+            :class:`EvaluationResult` with overlap-based score.
+        """
+        if not self._dep_keywords:
+            return EvaluationResult(score=1.0, passed=True, sub_scores={"consistency": 1.0})
+
+        output_keywords = self._extract_keywords(output)
+        overlaps: list[float] = []
+        deficiencies: list[str] = []
+
+        for i, dep_kw in enumerate(self._dep_keywords):
+            if not dep_kw:
+                overlaps.append(1.0)
+                continue
+            overlap = len(output_keywords & dep_kw) / len(dep_kw)
+            overlaps.append(overlap)
+            if overlap < self.min_overlap:
+                deficiencies.append(
+                    f"Low consistency with dependency {i}: "
+                    f"{overlap:.1%} keyword overlap (min {self.min_overlap:.1%})"
+                )
+
+        score = sum(overlaps) / len(overlaps) if overlaps else 1.0
+        passed = score >= self.min_overlap and not deficiencies
+        return EvaluationResult(
+            score=score,
+            passed=passed,
+            deficiencies=deficiencies,
+            sub_scores={"consistency": score},
+        )
+
+
+class CompletenessEvaluator:
+    """Evaluator that checks whether an output addresses all required aspects.
+
+    Given a list of required aspects (e.g. quality criteria from an
+    :class:`IntentSpec`), checks that each is mentioned or addressed in
+    the output.
+
+    Args:
+        required_aspects: List of strings that should be addressed.
+    """
+
+    def __init__(self, required_aspects: list[str]) -> None:
+        self.required_aspects = required_aspects
+
+    def evaluate(self, output: str, context: dict[str, Any] | None = None) -> EvaluationResult:
+        """Check *output* for completeness against required aspects.
+
+        Each aspect is checked via case-insensitive substring matching
+        on its keywords (words >= 4 chars).
+
+        Args:
+            output: The text to evaluate.
+            context: Unused; accepted for interface compatibility.
+
+        Returns:
+            :class:`EvaluationResult` with per-aspect scoring.
+        """
+        if not self.required_aspects:
+            return EvaluationResult(score=1.0, passed=True, sub_scores={"completeness": 1.0})
+
+        output_lower = output.lower()
+        addressed = 0
+        deficiencies: list[str] = []
+
+        for aspect in self.required_aspects:
+            # Extract keywords from the aspect
+            keywords = re.findall(r"\b[a-zA-Z_]\w{3,}\b", aspect.lower())
+            if not keywords:
+                addressed += 1
+                continue
+
+            # Check if most keywords appear in the output
+            found = sum(1 for kw in keywords if kw in output_lower)
+            if found >= len(keywords) * 0.5:
+                addressed += 1
+            else:
+                deficiencies.append(f"Aspect not addressed: {aspect}")
+
+        score = addressed / len(self.required_aspects)
+        passed = score >= 0.8 and not deficiencies
+        return EvaluationResult(
+            score=score,
+            passed=passed,
+            deficiencies=deficiencies,
+            sub_scores={"completeness": score},
+        )
+

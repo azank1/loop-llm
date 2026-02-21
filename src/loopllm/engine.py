@@ -3,11 +3,40 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import structlog
 
 from loopllm.provider import LLMProvider
+
+
+@runtime_checkable
+class Evaluator(Protocol):
+    """Protocol for output evaluators.
+
+    Any object with an ``evaluate`` method matching this signature can be
+    used as an evaluator in the refinement loop.
+    """
+
+    def evaluate(
+        self, output: str, context: dict[str, Any] | None = None
+    ) -> EvaluationResult: ...
+
+
+@runtime_checkable
+class ExitConditionProtocol(Protocol):
+    """Protocol for custom exit conditions.
+
+    Objects satisfying this protocol can be registered via
+    :meth:`LoopedLLM.add_exit_condition`.
+    """
+
+    def should_exit(
+        self,
+        iteration: int,
+        current_score: float,
+        scores_so_far: list[float],
+    ) -> ExitReason | None: ...
 
 logger = structlog.get_logger(__name__)
 
@@ -138,7 +167,7 @@ class CompositeEvaluator:
         weights: Optional per-evaluator weights. Defaults to equal weights.
     """
 
-    def __init__(self, evaluators: list[Any], weights: list[float] | None = None) -> None:
+    def __init__(self, evaluators: list[Evaluator], weights: list[float] | None = None) -> None:
         self.evaluators = evaluators
         if weights is None:
             self.weights = [1.0 / len(evaluators)] * len(evaluators)
@@ -187,20 +216,20 @@ class LoopedLLM:
     def __init__(self, provider: LLMProvider, config: LoopConfig | None = None) -> None:
         self.provider = provider
         self.config = config or LoopConfig()
-        self._exit_conditions: list[Any] = []
+        self._exit_conditions: list[ExitConditionProtocol] = []
 
-    def add_exit_condition(self, condition: Any) -> None:
+    def add_exit_condition(self, condition: ExitConditionProtocol) -> None:
         """Register an additional exit condition (e.g. :class:`BayesianExitCondition`).
 
         Args:
-            condition: An object with a ``should_exit`` method.
+            condition: An object satisfying :class:`ExitConditionProtocol`.
         """
         self._exit_conditions.append(condition)
 
     def refine(
         self,
         initial_prompt: str,
-        evaluator: Any,
+        evaluator: Evaluator,
         context: dict[str, Any] | None = None,
         model: str = "gpt-4o-mini",
     ) -> RefinementResult:
