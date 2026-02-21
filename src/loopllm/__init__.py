@@ -24,7 +24,7 @@ from loopllm.priors import AdaptivePriors, CallObservation
 from loopllm.store import LoopStore, SQLiteBackedPriors
 from loopllm.tasks import Task, TaskOrchestrator, TaskPlan, TaskState
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     # Engine

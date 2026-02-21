@@ -327,7 +327,51 @@ def build_parser() -> argparse.ArgumentParser:
     p_tshow.add_argument("task_id", help="Task ID")
     p_tshow.set_defaults(func=cmd_tasks_show)
 
+    # --- mcp-server ---
+    p_mcp = subparsers.add_parser(
+        "mcp-server", help="Start MCP server for IDE integration (VS Code, Cursor)"
+    )
+    p_mcp.add_argument(
+        "--provider", default=None,
+        choices=["mock", "ollama", "openrouter"],
+        help="LLM provider (default: LOOPLLM_PROVIDER env or mock)",
+    )
+    p_mcp.add_argument(
+        "--model", default=None,
+        help="Default model (default: LOOPLLM_MODEL env or gpt-4o-mini)",
+    )
+    p_mcp.add_argument(
+        "--db", default=None,
+        help="Path to SQLite database (default: ~/.loopllm/store.db)",
+    )
+    p_mcp.set_defaults(func=cmd_mcp_server)
+
     return parser
+
+
+def cmd_mcp_server(args: argparse.Namespace) -> None:
+    """Start the MCP server for IDE integration."""
+    import os
+
+    # Pass CLI args as env vars so mcp_server.py picks them up
+    if args.provider:
+        os.environ["LOOPLLM_PROVIDER"] = args.provider
+    if args.model:
+        os.environ["LOOPLLM_MODEL"] = args.model
+    if args.db:
+        os.environ["LOOPLLM_DB"] = args.db
+
+    try:
+        from loopllm.mcp_server import main as mcp_main
+    except ImportError:
+        print(
+            "Error: The mcp package is required for the MCP server.\n"
+            "Install it with: pip install loopllm[mcp]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    mcp_main()
 
 
 def main() -> None:

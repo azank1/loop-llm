@@ -7,13 +7,15 @@ dist/
 build/
 *.egg
 
+
 # Virtual environments
 .venv/
 venv/
 
 # IDE
 .idea/
-.vscode/
+.vscode/*
+!.vscode/mcp.json
 *.swp
 *.swo
 
@@ -35,3 +37,4 @@ priors.json
 
 # Local OPAM switch
 _opam/
+docs

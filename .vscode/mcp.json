@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "loopllm": {
+      "type": "stdio",
+      "command": "loopllm",
+      "args": ["mcp-server", "--provider", "ollama"],
+      "env": {
+        "LOOPLLM_MODEL": "qwen2.5:0.5b"
+      }
+    }
+  }
+}
