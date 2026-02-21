@@ -33,6 +33,11 @@ from loopllm.providers.agent import AgentExecutionRequired, AgentPassthroughProv
 from loopllm.store import LoopStore, SQLiteBackedPriors
 from loopllm.tasks import TaskOrchestrator
 
+try:
+    from mcp.server.fastmcp import Context
+except ImportError:
+    Context = Any  # type: ignore[assignment,misc]
+
 # ---------------------------------------------------------------------------
 # Shared state — initialised once per MCP server process
 # ---------------------------------------------------------------------------
