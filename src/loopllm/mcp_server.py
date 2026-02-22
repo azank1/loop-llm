@@ -48,11 +48,12 @@ _provider: LLMProvider | None = None
 _default_model: str = "gpt-4o-mini"
 _active_sessions: dict[str, dict[str, Any]] = {}
 _status_path: Path | None = None
+_history_path: Path | None = None
 
 
 def _init_state() -> None:
     """Lazily initialise shared store, priors, and provider."""
-    global _store, _priors, _provider, _default_model, _status_path  # noqa: PLW0603
+    global _store, _priors, _provider, _default_model, _status_path, _history_path  # noqa: PLW0603
 
     if _store is not None:
         return
@@ -63,6 +64,7 @@ def _init_state() -> None:
     _priors = SQLiteBackedPriors(_store)
     _default_model = os.environ.get("LOOPLLM_MODEL", "gpt-4o-mini")
     _status_path = db_path.parent / "status.json"
+    _history_path = db_path.parent / "prompt_history.json"
 
     provider_name = os.environ.get("LOOPLLM_PROVIDER", "agent")
     _provider = _make_provider(provider_name)
@@ -442,6 +444,27 @@ def _write_status(tool_name: str, data: dict[str, Any]) -> None:
         pass  # Never crash on status write failure
 
 
+def _append_history(record: dict[str, Any]) -> None:
+    """Append a prompt record to ~/.loopllm/prompt_history.json for the VS Code extension."""
+    if _history_path is None:
+        return
+    try:
+        history: list[dict[str, Any]] = []
+        if _history_path.exists():
+            try:
+                history = json.loads(_history_path.read_text())
+                if not isinstance(history, list):
+                    history = []
+            except (json.JSONDecodeError, OSError):
+                history = []
+        record["id"] = len(history) + 1
+        record["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        history.append(record)
+        _history_path.write_text(json.dumps(history, indent=2, default=str))
+    except OSError:
+        pass  # Never crash on history write failure
+
+
 # ---------------------------------------------------------------------------
 # Tool implementations (sync — FastMCP wraps them in threads)
 # ---------------------------------------------------------------------------
@@ -491,6 +514,19 @@ def _tool_intercept(prompt: str) -> str:
         "complexity": complexity,
         "route_chosen": route,
         "word_count": quality["word_count"],
+        "grade": quality["grade"],
+    })
+
+    # Also write to JSON history for the VS Code extension
+    _append_history({
+        "prompt_text": prompt[:500],
+        "quality_score": quality["quality_score"],
+        "specificity": quality["dimensions"]["specificity"],
+        "constraint_clarity": quality["dimensions"]["constraint_clarity"],
+        "context_completeness": quality["dimensions"]["context_completeness"],
+        "ambiguity": quality["dimensions"]["ambiguity"],
+        "format_spec": quality["dimensions"]["format_spec"],
+        "task_type": task_type,
         "grade": quality["grade"],
     })
 
