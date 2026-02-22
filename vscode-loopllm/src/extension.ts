@@ -7,6 +7,7 @@
  */
 
 import * as vscode from "vscode";
+import * as cp from "child_process";
 import { StatusBarGauge } from "./statusBar";
 import { StatusWatcher } from "./statusWatcher";
 import { DataProvider } from "./dataProvider";
@@ -17,6 +18,22 @@ let watcher: StatusWatcher;
 let dataProvider: DataProvider;
 let dashboardProvider: DashboardViewProvider;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
+let scoreDebounce: ReturnType<typeof setTimeout> | undefined;
+
+/** Spawn `loopllm score <text>` — writes status.json which StatusWatcher picks up. */
+function triggerScore(text: string, dbPath: string): void {
+  const trimmed = text.trim();
+  if (trimmed.length < 8) { return; }
+  if (scoreDebounce) { clearTimeout(scoreDebounce); }
+  scoreDebounce = setTimeout(() => {
+    cp.execFile(
+      "loopllm",
+      ["score", "--db", dbPath, trimmed.slice(0, 2000)],
+      { timeout: 6000 },
+      () => { /* status.json written; StatusWatcher fires gauge update */ }
+    );
+  }, 650);
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   const config = vscode.workspace.getConfiguration("loopllm");
@@ -56,6 +73,39 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("loopllm.showDashboard", () => {
       vscode.commands.executeCommand("loopllm.dashboard.focus");
+    })
+  );
+
+  // Command: score the current selection (or full line) on demand
+  context.subscriptions.push(
+    vscode.commands.registerCommand("loopllm.scoreSelection", () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) { return; }
+      const sel = editor.document.getText(editor.selection);
+      const text = sel.trim().length > 4
+        ? sel
+        : editor.document.lineAt(editor.selection.active.line).text;
+      triggerScore(text, dbPath);
+    })
+  );
+
+  // Auto-score when the user selects text in any editor
+  context.subscriptions.push(
+    vscode.window.onDidChangeTextEditorSelection((e) => {
+      const sel = e.textEditor.document.getText(e.selections[0]);
+      if (sel.trim().length > 12) {
+        triggerScore(sel, dbPath);
+      }
+    })
+  );
+
+  // Auto-score when a text document is saved (captures typed prompts in .md / .txt)
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument((doc) => {
+      const ext = doc.fileName.split(".").pop() ?? "";
+      if (["md", "txt", "prompt", "llm"].includes(ext)) {
+        triggerScore(doc.getText().slice(0, 2000), dbPath);
+      }
     })
   );
 

@@ -50,6 +50,18 @@
       {
         "command": "loopllm.showDashboard",
         "title": "Loop LLM: Show Dashboard"
+      },
+      {
+        "command": "loopllm.scoreSelection",
+        "title": "Loop LLM: Score Selected Text"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "loopllm.scoreSelection",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
+        "when": "editorTextFocus"
       }
     ],
     "configuration": {

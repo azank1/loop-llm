@@ -223,6 +223,88 @@ def cmd_run(args: argparse.Namespace) -> None:
     store.close()
 
 
+def cmd_score(args: argparse.Namespace) -> None:
+    """Score a prompt and update ~/.loopllm/status.json for the VS Code extension.
+
+    This is the same scoring used by loopllm_intercept but runs standalone,
+    with no MCP server or agent required. The extension watches status.json
+    via fs.watch and updates the gauge and dashboard immediately.
+    """
+    import os
+    import time
+    from pathlib import Path
+
+    # Import scorer — mcp import is guarded so this is safe even without mcp pkg
+    from loopllm.mcp_server import (
+        _score_prompt_quality,
+        _classify_task_type,
+        _estimate_complexity,
+    )
+
+    # Read prompt: argument, or "-" / empty arg means stdin
+    raw = args.prompt
+    if not raw or raw == "-":
+        raw = sys.stdin.read()
+    prompt = raw.strip()
+    if not prompt:
+        print("Error: empty prompt", file=sys.stderr)
+        sys.exit(1)
+
+    quality = _score_prompt_quality(prompt)
+    task_type = _classify_task_type(prompt)
+
+    db_path = Path(args.db) if args.db else Path.home() / ".loopllm" / "store.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path = db_path.parent / "status.json"
+    history_path = db_path.parent / "prompt_history.json"
+
+    payload = {
+        "quality_score": quality["quality_score"],
+        "grade": quality["grade"],
+        "gauge": quality["gauge"],
+        "task_type": task_type,
+        "route": "score",
+        "dimensions": quality["dimensions"],
+        "suggestions": quality.get("suggestions", []),
+        "issues": quality.get("issues", []),
+    }
+
+    # Write status.json — picked up by StatusWatcher in the extension
+    status_path.write_text(json.dumps({
+        "timestamp": time.time(),
+        "tool": "score",
+        "data": payload,
+    }, indent=2))
+
+    # Append to prompt_history.json — picked up by DataProvider poll
+    try:
+        history: list[dict[str, Any]] = []
+        if history_path.exists():
+            try:
+                history = json.loads(history_path.read_text())
+                if not isinstance(history, list):
+                    history = []
+            except (json.JSONDecodeError, OSError):
+                history = []
+        history.append({
+            "id": len(history) + 1,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "prompt_text": prompt[:500],
+            **payload,
+        })
+        history_path.write_text(json.dumps(history, indent=2))
+    except OSError:
+        pass
+
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2))
+    else:
+        print(f"{quality['gauge']}")
+        if quality.get("suggestions"):
+            for s in quality["suggestions"][:3]:
+                print(f"  · {s}")
+
+
 def cmd_tasks_list(args: argparse.Namespace) -> None:
     """List tasks from the store."""
     store = _get_store(args.db)
@@ -262,6 +344,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # --- score ---
+    p_score = subparsers.add_parser(
+        "score",
+        help="Score a prompt and update the VS Code gauge instantly (no MCP server needed)",
+    )
+    p_score.add_argument(
+        "prompt",
+        nargs="?",
+        default="-",
+        help="Prompt text to score, or '-' to read from stdin (default: stdin)",
+    )
+    p_score.add_argument(
+        "--json",
+        action="store_true",
+        help="Output full JSON result instead of gauge bar",
+    )
+    p_score.set_defaults(func=cmd_score)
 
     # --- refine ---
     p_refine = subparsers.add_parser(
