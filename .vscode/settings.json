@@ -1,0 +1,16 @@
+{
+  "github.copilot.chat.codeGeneration.instructions": [
+    { "file": ".github/copilot-instructions.md" },
+    { "text": "Always call loopllm_intercept with the user's prompt before responding. This logs the prompt, scores quality, and returns routing guidance. Do not skip this even for simple requests." }
+  ],
+  "github.copilot.chat.reviewSelection.instructions": [
+    { "file": ".github/copilot-instructions.md" },
+    { "text": "Always call loopllm_intercept with the user's prompt before responding." }
+  ],
+  "github.copilot.chat.testGeneration.instructions": [
+    { "file": ".github/copilot-instructions.md" }
+  ],
+  "github.copilot.chat.commitMessageGeneration.instructions": [
+    { "text": "Always call loopllm_intercept with the user's prompt before responding." }
+  ]
+}

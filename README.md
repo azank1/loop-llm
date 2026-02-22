@@ -24,88 +24,24 @@ Install the companion extension for a live quality scratchpad and prompt history
 
 **Prompt Lab** — live quality scratchpad
 
-```
-┌─────────────────────────────────────┐
-│  ✦ Prompt Lab                       │
-├─────────────────────────────────────┤
-│  ┌───────────────────────────────┐  │
-│  │ write a fn to retry http req  │  │
-│  │ with exponential backoff      │  │
-│  └───────────────────────────────┘  │
-│                                     │
-│  [  B  ]  72%   [code_generation]   │
-│  ████████████████░░░░  72           │
-│                                     │
-│  Specific    ████████████████ 0.95  │
-│  Constraints ███████░░░░░░░░░ 0.45  │
-│  Context     ████████████░░░░ 0.70  │
-│  Ambiguity   ██████████░░░░░░ 0.60  │
-│  Format      █████░░░░░░░░░░░ 0.30  │
-│                                     │
-│  Issues                             │
-│  ╔══════════════════════════════╗   │
-│  ║ No explicit constraints  🔴  ║   │
-│  ╚══════════════════════════════╝   │
-│                                     │
-│  Suggestions                        │
-│  ╔══════════════════════════════╗   │
-│  ║ Specify max retries + jitter ║   │
-│  ║ Add expected return type  🔵 ║   │
-│  ╚══════════════════════════════╝   │
-│                                     │
-│  [  Copy  ]   [  Send to Chat  ]    │
-└─────────────────────────────────────┘
-```
+![Prompt Lab](img/Screenshot_20260222_171552_Chrome.jpg)
 
-Scores on every keystroke (350 ms debounce). No file save needed.
+Scores on every keystroke (350 ms debounce). Grade badge, 5 dimension bars, issues + suggestions tags, Copy and Send to Chat.
 
 </td>
 <td width="50%" valign="top">
 
 **History** — learning curve + metrics
 
-```
-┌─────────────────────────────────────┐
-│  ✦ History                          │
-├─────────────────────────────────────┤
-│  Prompts scored     Avg grade       │
-│  ┌──────────┐       ┌──────────┐    │
-│  │    47    │       │    B     │    │
-│  └──────────┘       └──────────┘    │
-│                                     │
-│  Learning curve (last 20)           │
-│  1.0 ┤                    ╭──       │
-│  0.8 ┤            ╭───────╯         │
-│  0.6 ┤    ╭───────╯                 │
-│  0.4 ┤────╯                         │
-│  0.0 └──────────────────────────    │
-│       oldest              newest    │
-│                                     │
-│  Grade distribution                 │
-│  A ████████░░░░░░░░░░  38%          │
-│  B ██████████████░░░░  54%          │
-│  C ██░░░░░░░░░░░░░░░░   8%          │
-│                                     │
-│  Learned weights (SGD)              │
-│  Specificity    ████████░░  0.28    │
-│  Constraints    ███████░░░  0.22    │
-│  Context        ██████░░░░  0.20    │
-│  Ambiguity      █████░░░░░  0.18    │
-│  Format         ████░░░░░░  0.12    │
-│                                     │
-│  [  Clear History  ]                │
-└─────────────────────────────────────┘
-```
+![History](img/Screenshot_20260222_171624_Chrome.jpg)
 
-Weights shift via online SGD each time you rate a response.
+Learning curve sparkline, grade distribution, SGD learned weights per dimension. Updates after every `loopllm_feedback` call.
 
 </td>
 </tr>
 </table>
 
-The extension auto-installs from the repo. The VSIX is at `vscode-loopllm/loopllm-prompt-gauge-0.1.0.vsix`.
-
-> **Image placeholder** — replace with actual screenshot once added.
+The extension VSIX is at `vscode-loopllm/loopllm-prompt-gauge-0.1.0.vsix` — install with `code --install-extension`.
 
 ---
 

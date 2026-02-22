@@ -16,8 +16,12 @@ venv/
 .idea/
 .vscode/*
 !.vscode/mcp.json
+!.vscode/settings.json
 *.swp
 *.swo
+
+# Docs (design notes, not functional)
+docs/
 
 # mypy
 .mypy_cache/
