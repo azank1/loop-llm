@@ -1,0 +1,66 @@
+# loop-llm Cursor Rules
+
+This is the **loop-llm** repo — an MCP server that scores prompt quality, routes requests, and learns from feedback. You are both using it and developing it.
+
+## ALWAYS do this first
+
+On every user message, before writing any code or answer:
+
+1. Call `loopllm_intercept` with the user's exact prompt
+2. Check the `route` field in the response
+3. Act accordingly:
+   - `elicit` → call `loopllm_elicitation_start` before answering
+   - `decompose` → call `loopllm_plan_tasks` before answering
+   - `elicit_then_refine` → consider asking one question, then proceed
+   - `refine` → proceed directly
+
+For complex multi-step tasks, use `loopllm_run_pipeline` as the primary tool instead of answering directly.
+
+## Tools (24 total under loopllm_*)
+
+**Core loop:**
+- `loopllm_intercept` — call first on every message (score + route)
+- `loopllm_run_pipeline` — primary entry point for non-trivial tasks
+- `loopllm_refine` — iterative improvement with MCP Sampling
+- `loopllm_verify_output` — verify response quality after generation
+- `loopllm_gauge` — instant score check, no DB write
+
+**Elicitation:**
+- `loopllm_elicitation_start` / `loopllm_elicitation_answer` / `loopllm_elicitation_finish`
+
+**Plans:**
+- `loopllm_plan_tasks` / `loopllm_plan_register` / `loopllm_plan_next` / `loopllm_plan_update` / `loopllm_plan_list` / `loopllm_plan_delete`
+
+**Learning + history:**
+- `loopllm_feedback` — rate 1-5, triggers SGD step on scoring weights
+- `loopllm_prompt_stats` / `loopllm_context_history` / `loopllm_context_clear`
+- `loopllm_report` — learned weights + prior stats
+
+**Analysis:**
+- `loopllm_analyze_prompt` / `loopllm_classify_task` / `loopllm_suggest_config`
+- `loopllm_list_tasks` / `loopllm_show_task`
+
+## Repo layout
+
+```
+src/loopllm/mcp_server.py   — all 24 tools + SGD + Thompson Sampling
+src/loopllm/store.py         — SQLite (schema v4)
+src/loopllm/priors.py        — Bayesian priors (Beta-Binomial, Normal/Welford)
+vscode-loopllm/              — VS Code sidebar extension (TypeScript)
+tests/                        — pytest (186 tests)
+```
+
+## How it learns
+
+- Every `loopllm_feedback(rating)` call runs one online SGD step on the 5 scoring dimension weights, adjusting them toward what this developer actually values.
+- Question ordering uses Thompson Sampling on Beta priors built from historical positive/negative impact per question type.
+- Adaptive exit from refinement loops uses Beta-Binomial conjugate priors per (task_type, model).
+
+## Dev setup
+
+```bash
+pip install -e ".[dev]"
+python -m pytest tests/ -q
+```
+
+Active development branch: `testing-production`. Stable: `main`.
