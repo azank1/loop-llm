@@ -12,11 +12,13 @@ import { StatusBarGauge } from "./statusBar";
 import { StatusWatcher } from "./statusWatcher";
 import { DataProvider } from "./dataProvider";
 import { DashboardViewProvider } from "./dashboardProvider";
+import { PromptLabProvider } from "./promptLabProvider";
 
 let statusBar: StatusBarGauge;
 let watcher: StatusWatcher;
 let dataProvider: DataProvider;
 let dashboardProvider: DashboardViewProvider;
+let promptLabProvider: PromptLabProvider;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let scoreDebounce: ReturnType<typeof setTimeout> | undefined;
 
@@ -54,8 +56,15 @@ export function activate(context: vscode.ExtensionContext): void {
     context.extensionUri,
     dataProvider
   );
+  promptLabProvider = new PromptLabProvider(dbPath);
 
-  // Register sidebar webview
+  // Register sidebar webviews
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      "loopllm.promptLab",
+      promptLabProvider
+    )
+  );
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       "loopllm.dashboard",

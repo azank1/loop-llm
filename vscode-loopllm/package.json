@@ -37,8 +37,13 @@
       "loopllm": [
         {
           "type": "webview",
+          "id": "loopllm.promptLab",
+          "name": "Prompt Lab"
+        },
+        {
+          "type": "webview",
           "id": "loopllm.dashboard",
-          "name": "Prompt Dashboard"
+          "name": "History"
         }
       ]
     },
