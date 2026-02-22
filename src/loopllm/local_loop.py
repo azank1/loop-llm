@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 
 @dataclass
@@ -208,7 +208,7 @@ class LocalModelLoop:
         resp.raise_for_status()
         data = resp.json()
         # Ollama /api/chat response
-        return data.get("message", {}).get("content", data.get("response", ""))
+        return str(data.get("message", {}).get("content", data.get("response", "")))
 
     def _score(
         self,
@@ -238,7 +238,7 @@ class LocalModelLoop:
                 timeout=10.0,
             )
             resp.raise_for_status()
-            return resp.json()
+            return cast(dict[str, Any], resp.json())
         except Exception:
             # If loopllm serve is unreachable, use a simple word-count fallback
             words = len(output.split())

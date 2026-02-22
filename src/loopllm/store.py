@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, cast, Iterator
 
 import structlog
 
@@ -524,7 +524,7 @@ class LoopStore:
             ).fetchone()
         if row is None:
             return None
-        return json.loads(row["weights"])
+        return cast(dict[str, float], json.loads(row["weights"]))
 
     def get_learned_weight_meta(self) -> dict[str, Any]:
         """Return metadata about the current learned weights.
@@ -1048,7 +1048,7 @@ class LoopStore:
             ).fetchone()
         if row is None:
             return None
-        return json.loads(row["data"])
+        return cast(dict[str, Any], json.loads(row["data"]))
 
     def load_all_plans(self) -> list[dict[str, Any]]:
         """Load all persisted plans.

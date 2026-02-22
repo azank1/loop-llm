@@ -301,7 +301,7 @@ def _score_prompt_quality(prompt: str) -> dict[str, Any]:
     # Load adaptively learned weights if available.
     try:
         _init_state()
-        _learned = _store.load_learned_weights() if _store else None  # type: ignore[union-attr]
+        _learned = _store.load_learned_weights() if _store else None
     except Exception:
         _learned = None
     weights = _learned if _learned is not None else _default_weights
@@ -965,7 +965,7 @@ def _tool_analyze_prompt(
             if qt not in prioritized:
                 prioritized.append(qt)
 
-        questions = []
+        questions: list[dict[str, Any]] = []
         for qt in prioritized[:max_questions]:
             tmpl = _STATIC_QUESTION_TEMPLATES.get(qt, {})
             idx = len(questions)
@@ -980,7 +980,7 @@ def _tool_analyze_prompt(
     mod = _get_model(model)
     priors = _get_priors()
     refiner = IntentRefiner(provider=prov, priors=priors, model=mod, max_questions=max_questions)
-    questions = refiner.analyze(prompt)
+    cq_list = refiner.analyze(prompt)
 
     return json.dumps([
         {
@@ -989,7 +989,7 @@ def _tool_analyze_prompt(
             "options": q.options,
             "information_gain": round(q.information_gain, 4),
         }
-        for q in questions
+        for q in cq_list
     ], indent=2)
 
 
@@ -2084,7 +2084,7 @@ def create_mcp_server() -> Any:
         max_words: int = 10000,
         required_fields: list[str] | None = None,
         required_patterns: list[str] | None = None,
-        ctx: Context = None,
+        ctx: Context[Any, Any, Any] | None = None,
     ) -> str:
         prov = _get_provider(provider)
         if isinstance(prov, AgentPassthroughProvider) and ctx is not None:
@@ -2120,7 +2120,7 @@ def create_mcp_server() -> Any:
         max_iterations: int = 5,
         quality_threshold: float = 0.8,
         skip_elicitation: bool = False,
-        ctx: Context = None,
+        ctx: Context[Any, Any, Any] | None = None,
     ) -> str:
         prov = _get_provider(provider)
         if isinstance(prov, AgentPassthroughProvider) and ctx is not None:
@@ -2214,7 +2214,7 @@ def create_mcp_server() -> Any:
         provider: str | None = None,
         model: str | None = None,
         estimated_complexity: float = 0.5,
-        ctx: Context = None,
+        ctx: Context[Any, Any, Any] | None = None,
     ) -> str:
         prov = _get_provider(provider)
         if isinstance(prov, AgentPassthroughProvider) and ctx is not None:
@@ -2239,7 +2239,7 @@ def create_mcp_server() -> Any:
         quality_criteria: list[str] | None = None,
         provider: str | None = None,
         model: str | None = None,
-        ctx: Context = None,
+        ctx: Context[Any, Any, Any] | None = None,
     ) -> str:
         prov = _get_provider(provider)
         if isinstance(prov, AgentPassthroughProvider) and ctx is not None:
