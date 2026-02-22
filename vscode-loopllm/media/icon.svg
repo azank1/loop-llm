@@ -1,5 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-  <circle cx="12" cy="12" r="10"/>
-  <path d="M12 6v6l4 2"/>
-  <path d="M8 18l1-3h6l1 3"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <!-- baseline -->
+  <line x1="0.5" y1="21" x2="23.5" y2="21"/>
+  <!-- tall narrow bell, peak left-center x=8 -->
+  <path d="M 1,21 C 1,21 4.5,3.5 8,3.5 C 11.5,3.5 15,21 15,21"/>
+  <!-- medium bell, peak right-center x=14 -->
+  <path d="M 4,21 C 4,21 9,8.5 14,8.5 C 19,8.5 23,21 23,21"/>
+  <!-- short wide bell, peak center x=12 -->
+  <path d="M 2,21 C 2,21 7,13.5 12,13.5 C 17,13.5 22,21 22,21"/>
 </svg>
+

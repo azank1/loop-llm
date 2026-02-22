@@ -19,6 +19,8 @@ export class StatusWatcher {
   private emitter = new EventEmitter();
   private lastTimestamp = 0;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private watchAvailable = false;
 
   constructor(filePath: string) {
     this.filePath = filePath;
@@ -49,7 +51,6 @@ export class StatusWatcher {
 
     try {
       this.watcher = fs.watch(this.filePath, () => {
-        // Debounce rapid writes
         if (this.debounceTimer) {
           clearTimeout(this.debounceTimer);
         }
@@ -57,10 +58,16 @@ export class StatusWatcher {
           this.readAndEmit();
         }, 100);
       });
+      this.watchAvailable = true;
     } catch {
-      // File watching not available — fall back to polling
-      console.warn("Loop LLM: fs.watch not available, status updates disabled");
+      // fs.watch not available — use polling fallback (common in Linux containers)
     }
+
+    // Always run a polling fallback at 1 s so the gauge updates reliably
+    // even when inotify / fs.watch is not available in the dev container.
+    this.pollTimer = setInterval(() => {
+      this.readAndEmit();
+    }, 1000);
   }
 
   private readAndEmit(): void {
@@ -88,6 +95,10 @@ export class StatusWatcher {
     }
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
+    }
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
     }
     this.emitter.removeAllListeners();
   }
