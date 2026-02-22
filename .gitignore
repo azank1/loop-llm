@@ -36,9 +36,10 @@ Thumbs.db
 # Priors data
 priors.json
 
-# Dune generated files
-*.install
+# VS Code extension build artifacts
+vscode-loopllm/out/
+*.vsix
 
-# Local OPAM switch
-_opam/
-docs
+# Scratch / template holder (keep dir, ignore contents)
+_scratch/*
+!_scratch/.gitkeep
