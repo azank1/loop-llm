@@ -3,10 +3,105 @@
 [![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=22&pause=1000&color=00CFFF&center=true&vCenter=true&width=700&lines=Iterative+Prompt+Refinement+Engine;Bayesian+Adaptive+Exit+%2B+Cost-Aware+Stopping;MCP+Server+%E2%80%94+24+Tools+for+VS+Code+%2B+Cursor;Prompt+Quality+Scoring+%2B+Online+Weight+Learning;Intent+Elicitation+%2B+Task+Decomposition;Zero+Training+%E2%80%94+Model+Agnostic)](https://github.com/azank1/loop-llm)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![PyPI](https://img.shields.io/badge/PyPI-loopllm-blue)](https://pypi.org/project/loopllm/)
+[![VS Code Extension](https://img.shields.io/badge/VS%20Code-Extension-007ACC?logo=visual-studio-code)](https://github.com/azank1/loop-llm/tree/main/vscode-loopllm)
 
 **A prompt observer and quality loop for your AI agent.**
 
 loop-llm sits between you and your IDE's agent as an MCP server. Every prompt is scored, routed, refined if needed, and then verified — all inside a single tool call using MCP Sampling. The system **learns** over time: it runs online gradient descent on scoring dimension weights every time you rate a response, and selects clarifying questions via Thompson Sampling on Beta priors.
+
+---
+
+## VS Code Extension
+
+Install the companion extension for a live quality scratchpad and prompt history dashboard directly in the sidebar.
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**Prompt Lab** — live quality scratchpad
+
+```
+┌─────────────────────────────────────┐
+│  ✦ Prompt Lab                       │
+├─────────────────────────────────────┤
+│  ┌───────────────────────────────┐  │
+│  │ write a fn to retry http req  │  │
+│  │ with exponential backoff      │  │
+│  └───────────────────────────────┘  │
+│                                     │
+│  [  B  ]  72%   [code_generation]   │
+│  ████████████████░░░░  72           │
+│                                     │
+│  Specific    ████████████████ 0.95  │
+│  Constraints ███████░░░░░░░░░ 0.45  │
+│  Context     ████████████░░░░ 0.70  │
+│  Ambiguity   ██████████░░░░░░ 0.60  │
+│  Format      █████░░░░░░░░░░░ 0.30  │
+│                                     │
+│  Issues                             │
+│  ╔══════════════════════════════╗   │
+│  ║ No explicit constraints  🔴  ║   │
+│  ╚══════════════════════════════╝   │
+│                                     │
+│  Suggestions                        │
+│  ╔══════════════════════════════╗   │
+│  ║ Specify max retries + jitter ║   │
+│  ║ Add expected return type  🔵 ║   │
+│  ╚══════════════════════════════╝   │
+│                                     │
+│  [  Copy  ]   [  Send to Chat  ]    │
+└─────────────────────────────────────┘
+```
+
+Scores on every keystroke (350 ms debounce). No file save needed.
+
+</td>
+<td width="50%" valign="top">
+
+**History** — learning curve + metrics
+
+```
+┌─────────────────────────────────────┐
+│  ✦ History                          │
+├─────────────────────────────────────┤
+│  Prompts scored     Avg grade       │
+│  ┌──────────┐       ┌──────────┐    │
+│  │    47    │       │    B     │    │
+│  └──────────┘       └──────────┘    │
+│                                     │
+│  Learning curve (last 20)           │
+│  1.0 ┤                    ╭──       │
+│  0.8 ┤            ╭───────╯         │
+│  0.6 ┤    ╭───────╯                 │
+│  0.4 ┤────╯                         │
+│  0.0 └──────────────────────────    │
+│       oldest              newest    │
+│                                     │
+│  Grade distribution                 │
+│  A ████████░░░░░░░░░░  38%          │
+│  B ██████████████░░░░  54%          │
+│  C ██░░░░░░░░░░░░░░░░   8%          │
+│                                     │
+│  Learned weights (SGD)              │
+│  Specificity    ████████░░  0.28    │
+│  Constraints    ███████░░░  0.22    │
+│  Context        ██████░░░░  0.20    │
+│  Ambiguity      █████░░░░░  0.18    │
+│  Format         ████░░░░░░  0.12    │
+│                                     │
+│  [  Clear History  ]                │
+└─────────────────────────────────────┘
+```
+
+Weights shift via online SGD each time you rate a response.
+
+</td>
+</tr>
+</table>
+
+The extension auto-installs from the repo. The VSIX is at `vscode-loopllm/loopllm-prompt-gauge-0.1.0.vsix`.
 
 ---
 
