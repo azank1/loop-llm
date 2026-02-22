@@ -72,30 +72,35 @@ export class PromptLabProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    cp.execFile(
-      "loopllm",
-      ["score", "--db", this._dbPath, "--json", trimmed.slice(0, 3000)],
-      { timeout: 8000 },
-      (err, stdout, stderr) => {
-        if (err) {
-          // Try python -m loopllm fallback
-          cp.execFile(
-            "python",
-            ["-m", "loopllm", "score", "--db", this._dbPath, "--json", trimmed.slice(0, 3000)],
-            { timeout: 8000 },
-            (err2, stdout2) => {
-              if (err2) {
-                this._post({ type: "error", message: "loopllm not found — run: pip install -e .[mcp]" });
-                return;
-              }
-              this._parseAndPost(stdout2);
-            }
-          );
-          return;
-        }
-        this._parseAndPost(stdout);
-      }
-    );
+    // VS Code child processes get a minimal PATH that often excludes the
+    // Python env bin dir. Augment with common locations so loopllm is found.
+    const extraPaths = [
+      "/home/codespace/.python/current/bin",
+      "/usr/local/bin",
+      "/usr/bin",
+      "/opt/homebrew/bin",
+    ].join(":");
+    const env = {
+      ...process.env,
+      PATH: `${extraPaths}:${process.env.PATH ?? ""}`,
+    };
+
+    const args = ["--db", this._dbPath, "score", "--json", trimmed.slice(0, 3000)];
+
+    cp.execFile("loopllm", args, { timeout: 8000, env }, (err, stdout) => {
+      if (!err) { this._parseAndPost(stdout); return; }
+
+      // Fallback 1: python3 -m loopllm
+      cp.execFile("python3", ["-m", "loopllm", ...args], { timeout: 8000, env }, (err2, stdout2) => {
+        if (!err2) { this._parseAndPost(stdout2); return; }
+
+        // Fallback 2: absolute path via common env layout
+        cp.execFile("/home/codespace/.python/current/bin/loopllm", args, { timeout: 8000 }, (err3, stdout3) => {
+          if (!err3) { this._parseAndPost(stdout3); return; }
+          this._post({ type: "error", message: "loopllm not found — run: pip install -e .[mcp] in the repo root" });
+        });
+      });
+    });
   }
 
   private _parseAndPost(stdout: string): void {

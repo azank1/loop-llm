@@ -27,11 +27,13 @@ function triggerScore(text: string, dbPath: string): void {
   const trimmed = text.trim();
   if (trimmed.length < 8) { return; }
   if (scoreDebounce) { clearTimeout(scoreDebounce); }
+  const extraPaths = "/home/codespace/.python/current/bin:/usr/local/bin:/usr/bin:/opt/homebrew/bin";
+  const env = { ...process.env, PATH: `${extraPaths}:${process.env.PATH ?? ""}` };
   scoreDebounce = setTimeout(() => {
     cp.execFile(
       "loopllm",
-      ["score", "--db", dbPath, trimmed.slice(0, 2000)],
-      { timeout: 6000 },
+      ["--db", dbPath, "score", trimmed.slice(0, 2000)],
+      { timeout: 6000, env },
       () => { /* status.json written; StatusWatcher fires gauge update */ }
     );
   }, 650);
