@@ -1,14 +1,16 @@
-# loop-llm
+# PromptLoop
 
-[![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=22&pause=1000&color=00CFFF&center=true&vCenter=true&width=700&lines=Iterative+Prompt+Refinement+Engine;Bayesian+Adaptive+Exit+%2B+Cost-Aware+Stopping;MCP+Server+%E2%80%94+24+Tools+for+VS+Code+%2B+Cursor;Prompt+Quality+Scoring+%2B+Online+Weight+Learning;Intent+Elicitation+%2B+Task+Decomposition;Zero+Training+%E2%80%94+Model+Agnostic)](https://github.com/azank1/loop-llm)
+[![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=22&pause=1000&color=00CFFF&center=true&vCenter=true&width=700&lines=PromptLoop+%E2%80%94+Prompt+Quality+Loop;Bayesian+Adaptive+Exit+%2B+Thompson+Sampling;MCP+Server+%E2%80%94+24+Tools+for+VS+Code+%2B+Cursor;Online+Weight+Learning+via+SGD;Intent+Elicitation+%2B+Task+Decomposition;Zero+Training+%E2%80%94+Model+Agnostic)](https://github.com/azank1/loop-llm)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![PyPI](https://img.shields.io/badge/PyPI-loopllm-blue)](https://pypi.org/project/loopllm/)
+[![PyPI](https://img.shields.io/badge/PyPI-promptloop-blue)](https://pypi.org/project/loopllm/)
 [![VS Code Extension](https://img.shields.io/badge/VS%20Code-Extension-007ACC?logo=visual-studio-code)](https://github.com/azank1/loop-llm/tree/main/vscode-loopllm)
 
-**A prompt observer and quality loop for your AI agent.**
+**A Bayesian prompt observer and quality loop for your AI agent.**
 
-loop-llm sits between you and your IDE's agent as an MCP server. Every prompt is scored, routed, refined if needed, and then verified — all inside a single tool call using MCP Sampling. The system **learns** over time: it runs online gradient descent on scoring dimension weights every time you rate a response, and selects clarifying questions via Thompson Sampling on Beta priors.
+PromptLoop sits between you and your IDE's agent as an MCP server. Every prompt is scored, routed, refined if needed, and then verified — all inside a single tool call using MCP Sampling. The system **learns** over time: it runs online gradient descent on scoring dimension weights every time you rate a response, and selects clarifying questions via Thompson Sampling on Beta priors.
+
+> The underlying CLI and tool API ship as `loopllm` (the original name). PromptLoop is the project brand.
 
 ---
 
@@ -103,11 +105,13 @@ Weights shift via online SGD each time you rate a response.
 
 The extension auto-installs from the repo. The VSIX is at `vscode-loopllm/loopllm-prompt-gauge-0.1.0.vsix`.
 
+> **Image placeholder** — replace with actual screenshot once added.
+
 ---
 
 ## Primary tool: `loopllm_run_pipeline`
 
-This is the intended entry point. A single call runs the full observe → elicit → refine → verify loop:
+This is the intended entry point for PromptLoop. A single call runs the full observe → elicit → refine → verify loop:
 
 ```
 loopllm_run_pipeline("add retry logic to the download function")
@@ -128,7 +132,7 @@ Everything runs inline via MCP Sampling — no extra chat turns, no polling.
 ## Quickstart
 
 ```bash
-git clone https://github.com/azank1/loop-llm
+git clone https://github.com/azank1/loop-llm   # GitHub repo still named loop-llm
 cd loop-llm
 pip install -e ".[mcp]"
 code .
@@ -312,7 +316,7 @@ print(result.output, result.best_score, result.converged)
 ## Contributing
 
 ```bash
-git clone https://github.com/azank1/loop-llm
+git clone https://github.com/azank1/loop-llm   # GitHub repo still named loop-llm
 cd loop-llm
 pip install -e ".[dev]"
 python -m pytest tests/ -q          # 186 tests, ~2s
@@ -352,9 +356,9 @@ MIT
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**A prompt observer and quality loop for your AI agent.**
+**A Bayesian prompt observer and quality loop for your AI agent.**
 
-loop-llm sits between you and your IDE's agent as an MCP server. Every prompt you write is intercepted, scored across five quality dimensions, and routed to the right tool — clarification, refinement, or task decomposition. It tracks your prompting history over time, lets you manage multi-task plans with confidence gating, and runs iterative improvement loops using the host agent's own LLM via MCP Sampling, with no separate model needed.
+PromptLoop sits between you and your IDE's agent as an MCP server. Every prompt you write is intercepted, scored across five quality dimensions, and routed to the right tool — clarification, refinement, or task decomposition. It tracks your prompting history over time, lets you manage multi-task plans with confidence gating, and runs iterative improvement loops using the host agent's own LLM via MCP Sampling, with no separate model needed.
 
 Think of it as a **prompt observer**: it watches what you ask, measures how well-formed it is, tells you where it's weak, and automatically improves it before the agent acts.
 
@@ -365,7 +369,7 @@ Think of it as a **prompt observer**: it watches what you ask, measures how well
 ## Quickstart
 
 ```bash
-git clone https://github.com/azank1/loop-llm
+git clone https://github.com/azank1/loop-llm   # GitHub repo still named loop-llm
 cd loop-llm
 pip install -e ".[mcp]"
 code .
@@ -504,7 +508,7 @@ print(result.output, result.best_score, result.converged)
 ## Contributing
 
 ```bash
-git clone https://github.com/azank1/loop-llm
+git clone https://github.com/azank1/loop-llm   # GitHub repo still named loop-llm
 cd loop-llm
 pip install -e ".[dev]"
 python -m pytest tests/ -q          # 186 tests, ~0.5s
