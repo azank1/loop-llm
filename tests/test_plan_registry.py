@@ -207,7 +207,6 @@ class TestPlanRegistry:
     def test_mark_task_done_then_next_advances(self):
         reg = self._make_registry()
         plan = reg.create("goal", self._tasks())
-        tid0 = plan.tasks[0].id
         # mark first task done
         plan.tasks[0].status = TaskStatus.DONE
         nxt = reg.next_task(plan.plan_id)

@@ -29,7 +29,7 @@ from loopllm.evaluators import (
 from loopllm.priors import CallObservation
 from loopllm.provider import LLMProvider
 from loopllm.plan_registry import get_registry
-from loopllm.providers.agent import AgentExecutionRequired, AgentPassthroughProvider
+from loopllm.providers.agent import AgentPassthroughProvider
 from loopllm.store import LoopStore, SQLiteBackedPriors
 from loopllm.tasks import TaskOrchestrator
 
@@ -1988,7 +1988,7 @@ async def _sampling_verify_output(
 def create_mcp_server() -> Any:
     """Create and configure the FastMCP server with all tools registered."""
     try:
-        from mcp.server.fastmcp import FastMCP, Context
+        from mcp.server.fastmcp import FastMCP
     except ImportError as exc:
         raise ImportError(
             "The mcp package is required for the MCP server. "

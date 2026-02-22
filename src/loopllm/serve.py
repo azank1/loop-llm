@@ -25,12 +25,9 @@ from typing import Any
 from loopllm.mcp_server import (
     _init_state,
     _score_prompt_quality,
-    _classify_task_type,
-    _estimate_complexity,
     _build_evaluator,
     _tool_intercept,
 )
-from loopllm.evaluators import LengthEvaluator
 from loopllm.plan_registry import get_registry
 
 

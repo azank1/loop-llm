@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from loopllm.provider import LLMProvider, LLMResponse, LLMUsage
+from loopllm.provider import LLMProvider, LLMResponse
 
 
 class AgentExecutionRequired(Exception):

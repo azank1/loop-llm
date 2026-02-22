@@ -230,7 +230,6 @@ def cmd_score(args: argparse.Namespace) -> None:
     with no MCP server or agent required. The extension watches status.json
     via fs.watch and updates the gauge and dashboard immediately.
     """
-    import os
     import time
     from pathlib import Path
 
@@ -238,7 +237,6 @@ def cmd_score(args: argparse.Namespace) -> None:
     from loopllm.mcp_server import (
         _score_prompt_quality,
         _classify_task_type,
-        _estimate_complexity,
     )
 
     # Read prompt: argument, or "-" / empty arg means stdin
