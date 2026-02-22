@@ -23,7 +23,7 @@ from loopllm.priors import (
 
 logger = structlog.get_logger(__name__)
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -134,6 +134,16 @@ CREATE TABLE IF NOT EXISTS plans (
 );
 """
 
+_SCHEMA_V4_SQL = """\
+CREATE TABLE IF NOT EXISTS learned_weights (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    weights     TEXT NOT NULL,
+    n_updates   INTEGER NOT NULL DEFAULT 0,
+    last_loss   REAL NOT NULL DEFAULT 0.0,
+    updated_at  TEXT NOT NULL
+);
+"""
+
 
 class LoopStore:
     """SQLite-backed store for loop-llm state.
@@ -176,6 +186,7 @@ class LoopStore:
                 conn.executescript(_SCHEMA_SQL)
                 conn.executescript(_SCHEMA_V2_SQL)
                 conn.executescript(_SCHEMA_V3_SQL)
+                conn.executescript(_SCHEMA_V4_SQL)
                 conn.execute(
                     "INSERT INTO schema_version (version) VALUES (?)",
                     (SCHEMA_VERSION,),
@@ -201,6 +212,8 @@ class LoopStore:
             conn.executescript(_SCHEMA_V2_SQL)
         if from_v < 3:
             conn.executescript(_SCHEMA_V3_SQL)
+        if from_v < 4:
+            conn.executescript(_SCHEMA_V4_SQL)
         conn.execute("UPDATE schema_version SET version = ?", (to_v,))
         conn.commit()
 
@@ -461,6 +474,72 @@ class LoopStore:
             }
             for row in rows
         ]
+
+    # -- learned weights (online SGD) ----------------------------------------
+
+    _DEFAULT_WEIGHTS = {
+        "specificity": 0.25,
+        "constraint_clarity": 0.20,
+        "context_completeness": 0.20,
+        "ambiguity": 0.20,
+        "format_spec": 0.15,
+    }
+
+    def save_learned_weights(
+        self,
+        weights: dict[str, float],
+        n_updates: int,
+        last_loss: float,
+    ) -> None:
+        """Persist learned scoring weights.
+
+        Args:
+            weights: Dimension-name → weight mapping (must sum to ~1.0).
+            n_updates: Cumulative number of SGD steps applied.
+            last_loss: MSE from the most recent SGD step.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                """INSERT INTO learned_weights (id, weights, n_updates, last_loss, updated_at)
+                   VALUES (1, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       weights    = excluded.weights,
+                       n_updates  = excluded.n_updates,
+                       last_loss  = excluded.last_loss,
+                       updated_at = excluded.updated_at""",
+                (json.dumps(weights), n_updates, last_loss, now),
+            )
+            conn.commit()
+
+    def load_learned_weights(self) -> dict[str, float] | None:
+        """Return the learned weight dict, or ``None`` if never saved.
+
+        Returns:
+            Dict mapping dimension names to weights, or None.
+        """
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT weights FROM learned_weights WHERE id = 1"
+            ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row["weights"])
+
+    def get_learned_weight_meta(self) -> dict[str, Any]:
+        """Return metadata about the current learned weights.
+
+        Returns:
+            Dict with keys ``n_updates``, ``last_loss``, ``updated_at``.
+            If no weights exist yet, returns zeroed defaults.
+        """
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT n_updates, last_loss, updated_at FROM learned_weights WHERE id = 1"
+            ).fetchone()
+        if row is None:
+            return {"n_updates": 0, "last_loss": 0.0, "updated_at": None}
+        return dict(row)
 
     # -- session management --------------------------------------------------
 

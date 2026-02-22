@@ -49,6 +49,8 @@ _default_model: str = "gpt-4o-mini"
 _active_sessions: dict[str, dict[str, Any]] = {}
 _status_path: Path | None = None
 _history_path: Path | None = None
+# Last per-dimension scores computed by _score_prompt_quality — used by SGD.
+_last_prompt_dims: dict[str, float] = {}
 
 
 def _init_state() -> None:
@@ -289,13 +291,31 @@ def _score_prompt_quality(prompt: str) -> dict[str, Any]:
     format_spec = min(1.0, fmt_hits * 0.25)
 
     # --- Composite Score ---
-    weights = {
+    _default_weights: dict[str, float] = {
         "specificity": 0.25,
         "constraint_clarity": 0.20,
         "context_completeness": 0.20,
         "ambiguity": 0.20,
         "format_spec": 0.15,
     }
+    # Load adaptively learned weights if available.
+    try:
+        _init_state()
+        _learned = _store.load_learned_weights() if _store else None  # type: ignore[union-attr]
+    except Exception:
+        _learned = None
+    weights = _learned if _learned is not None else _default_weights
+
+    # Cache raw dimension values for SGD step at feedback time.
+    global _last_prompt_dims  # noqa: PLW0603
+    _last_prompt_dims = {
+        "specificity": specificity,
+        "constraint_clarity": constraint_clarity,
+        "context_completeness": context_completeness,
+        "ambiguity": ambiguity,
+        "format_spec": format_spec,
+    }
+
     composite = (
         weights["specificity"] * specificity
         + weights["constraint_clarity"] * constraint_clarity
@@ -584,6 +604,62 @@ def _tool_prompt_stats(window: int = 50) -> str:
     return json.dumps(stats, indent=2, default=str)
 
 
+def _update_scoring_weights(rating: int, dims: dict[str, float]) -> dict[str, Any]:
+    """Run one online SGD step on the scoring dimension weights.
+
+    Maps the 1-5 user rating to a [0, 1] target, computes the MSE gradient
+    w.r.t. each weight, clips weights to [0.05, 0.50] and simplex-projects
+    (sum-to-1), then persists to the store.
+
+    Args:
+        rating: User quality rating 1-5.
+        dims: Raw per-dimension scores from ``_score_prompt_quality``.
+
+    Returns:
+        Dict with new weights, loss, and update count.
+    """
+    if not dims:
+        return {"skipped": True, "reason": "no dimension cache"}
+
+    store = _get_store()
+    current_weights = store.load_learned_weights() or {
+        "specificity": 0.25,
+        "constraint_clarity": 0.20,
+        "context_completeness": 0.20,
+        "ambiguity": 0.20,
+        "format_spec": 0.15,
+    }
+
+    target = (max(1, min(5, rating)) - 1) / 4.0  # map [1, 5] → [0.0, 1.0]
+
+    # Predicted composite under current weights (ambiguity is inverted).
+    y_hat = sum(
+        current_weights[k] * (1.0 - dims[k] if k == "ambiguity" else dims[k])
+        for k in current_weights
+        if k in dims
+    )
+    loss = (y_hat - target) ** 2
+
+    lr = 0.02  # learning rate
+    new_weights = {}
+    for k, w in current_weights.items():
+        d = (1.0 - dims[k]) if k == "ambiguity" else dims.get(k, 0.0)
+        grad = 2.0 * (y_hat - target) * d
+        new_weights[k] = w - lr * grad
+
+    # Project onto simplex: clip to [0.05, 0.50] then renormalise.
+    for k in new_weights:
+        new_weights[k] = max(0.05, min(0.50, new_weights[k]))
+    total = sum(new_weights.values())
+    for k in new_weights:
+        new_weights[k] = round(new_weights[k] / total, 6)
+
+    meta = store.get_learned_weight_meta()
+    n_updates = meta["n_updates"] + 1
+    store.save_learned_weights(new_weights, n_updates, loss)
+    return {"weights": new_weights, "loss": round(loss, 6), "n_updates": n_updates}
+
+
 def _tool_feedback(
     rating: int,
     task_type: str = "general",
@@ -608,6 +684,9 @@ def _tool_feedback(
     )
     priors.observe(obs)
 
+    # --- Online SGD step: update scoring dimension weights. ---
+    sgd_result = _update_scoring_weights(clamped, _last_prompt_dims)
+
     result: dict[str, Any] = {
         "recorded": True,
         "status": "ok",
@@ -617,6 +696,7 @@ def _tool_feedback(
         "model": model,
         "impact": ("Priors updated — future predictions for this task "
                    "type will be adjusted"),
+        "weight_update": sgd_result,
     }
     if comment:
         result["comment"] = comment
@@ -804,7 +884,7 @@ _STATIC_QUESTION_TEMPLATES: dict[str, dict[str, Any]] = {
     },
 }
 
-# Bayesian information-gain order for static questions (mirrors default priors).
+# Fallback order when no historical stats are available.
 _STATIC_QUESTION_ORDER = ["scope", "format", "constraints", "examples",
                            "audience", "priority", "edge_cases"]
 
@@ -814,19 +894,44 @@ def _next_static_question(
     max_questions: int,
     n_asked: int,
 ) -> dict[str, Any] | None:
-    """Return the next static question dict, or None if done."""
+    """Return the next question selected via Thompson Sampling.
+
+    Each question type maintains a Beta(alpha, beta) prior where alpha tracks
+    historically positive-impact asks and beta tracks negative-impact asks.
+    We draw one sample per candidate type and pick the argmax — exploration
+    / exploitation without a fixed schedule.
+    """
+    import random  # stdlib — already available
+
     if n_asked >= max_questions:
         return None
-    for qt in _STATIC_QUESTION_ORDER:
-        if qt not in asked_types:
-            tmpl = _STATIC_QUESTION_TEMPLATES[qt]
-            return {
-                "text": tmpl["text"],
-                "question_type": qt,
-                "options": tmpl["options"],
-                "information_gain": round(0.5 - n_asked * 0.05, 4),
-            }
-    return None
+
+    candidates = [qt for qt in _STATIC_QUESTION_TEMPLATES if qt not in asked_types]
+    if not candidates:
+        return None
+
+    # Load per-type stats from store for Thompson Sampling.
+    try:
+        stats_list = _get_store().get_question_stats()
+        stats: dict[str, dict[str, Any]] = {r["question_type"]: r for r in stats_list}
+    except Exception:
+        stats = {}
+
+    scores: dict[str, float] = {}
+    for qt in candidates:
+        row = stats.get(qt, {})
+        alpha = 1.0 + float(row.get("positive_impact", 0))
+        beta  = 1.0 + float(row.get("negative_impact", 0))
+        scores[qt] = random.betavariate(alpha, beta)
+
+    best_qt = max(scores, key=lambda k: scores[k])
+    tmpl = _STATIC_QUESTION_TEMPLATES[best_qt]
+    return {
+        "text": tmpl["text"],
+        "question_type": best_qt,
+        "options": tmpl["options"],
+        "information_gain": round(scores[best_qt], 4),
+    }
 
 
 def _tool_analyze_prompt(
