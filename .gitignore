@@ -17,6 +17,7 @@ venv/
 .vscode/*
 !.vscode/mcp.json
 !.vscode/settings.json
+.cursor/rules/
 *.swp
 *.swo
 

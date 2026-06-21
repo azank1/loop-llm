@@ -9,7 +9,7 @@ the branch/commit conventions, and the checks your change must pass.
 git clone https://github.com/azank1/loop-llm
 cd loop-llm
 pip install -e ".[dev]"
-python -m pytest tests/ -q          # 204 tests (200 pass, 4 integration skipped)
+python -m pytest tests/ -q          # 219 tests (215 pass, 4 integration skipped)
 ```
 
 ## Branch naming convention
@@ -20,10 +20,15 @@ Branches follow a compact `<initials>/<type>/<short>` scheme:
 - `<type>` — `ft` (feature), `fix`, `chore`, `docs`, `refactor`, `test`
 - `<short>` — a terse, hyphenated descriptor
 
-Examples: `az/ft/agent-loops`, `az/fix/store-migration`, `az/docs/readme`.
+Examples: `az/ft/cdv-v07`, `az/fix/store-migration`, `az/docs/readme`.
 
 Do **not** include tool, assistant, or AI names in branch names or commit
 metadata.
+
+## Authorship
+
+All commits on this repository are authored by `azank1 <azanhyder49@gmail.com>`.
+Use squash-merge PRs into `main`; delete feature branches after merge.
 
 ## Commits & pull requests
 
@@ -46,6 +51,9 @@ python -m pytest tests/ -q
 | Core refinement loop | `src/loopllm/engine.py` |
 | Bayesian priors / learning | `src/loopllm/priors.py` |
 | Adaptive agent loops | `src/loopllm/agent_loop.py` |
+| Conservative Dual-Verify scoring | `src/loopllm/step_scorer.py` |
+| Agent-loop guard stack | `src/loopllm/guards.py` |
+| Evaluator factory | `src/loopllm/evaluator_factory.py` |
 | Bayesian early stopping | `src/loopllm/adaptive_exit.py` |
 | MCP tools (28) | `src/loopllm/mcp_server.py` |
 | SQLite persistence (schema v4) | `src/loopllm/store.py` |

@@ -73,46 +73,62 @@ Everything runs inline via MCP Sampling — no extra chat turns, no polling.
 
 ---
 
-## Adaptive agent loops
+## Adaptive agent loops — Conservative Dual-Verify (CDV)
 
-Most agent loops stop on a fixed `max_iterations` or "let the LLM decide when it's
-done." Both waste tokens or quit early. PromptLoop gives your agent's **own**
-plan → act → observe loop a statistically-grounded stop button — built on the same
-Bayesian priors used for refinement, with **no training data** required.
+Most agent loops stop on a fixed `max_iterations` or let the agent self-grade when
+it's "done." Both waste tokens or optimize **reported** progress. PromptLoop v0.7
+introduces **Conservative Dual-Verify**: agents submit **step artifacts** (test
+logs, diffs, summaries); the MCP server scores them through **two independent
+channels** and feeds the **stricter** score into Bayesian stop/continue logic.
+
+```python
+channel_a = deterministic_evaluator.evaluate(step_output)   # regex, JSON, completeness
+channel_b = critic_sample(step_output, goal, criteria)      # separate verifier call
+final_score = min(channel_a, channel_b)                   # either channel can veto
+```
 
 Three MCP tools wrap any iterative task:
 
 ```
-loopllm_loop_start(goal="refactor module and make tests pass", task_type="bugfix")
-  → { suggested_budget: 3, quality_threshold: 0.8, confidence: 0.0 }
+loopllm_loop_start(
+  goal="refactor module and make tests pass",
+  task_type="bugfix",
+  required_patterns=["tests passed"],
+)
+  → { suggested_budget: 3, quality_threshold: 0.8, evaluator_type: "composite" }
 
-# after each step, report how close you got (0–1):
-loopllm_loop_step(session_id, score=0.45)  → { decision: "continue", reason: ... }
-loopllm_loop_step(session_id, score=0.88)  → { decision: "stop", reason: "Goal reached..." }
+# after each step, submit the artifact — do NOT self-grade:
+loopllm_loop_step(session_id, step_output="pytest: 3 failed, 12 passed")
+  → {
+      decision: "continue",
+      score: 0.0,
+      channel_a_score: 0.0,
+      channel_b_score: 0.55,
+      score_source: "conservative_dual_verify",
+      deficiencies: ["Required pattern not found: tests passed"],
+    }
 
-loopllm_loop_end(session_id)               → learns optimal depth for next time
+loopllm_loop_end(session_id)   → learns optimal depth from verified trajectories
 ```
 
-`loopllm_loop_step` returns `stop` when any of these fire — the same logic as the
-refinement engine's [`BayesianExitCondition`](src/loopllm/adaptive_exit.py):
+`loopllm_loop_step` returns `stop` when any guard fires:
 
-- **goal reached** — score ≥ threshold
-- **plateau** — last two deltas below the convergence band
-- **low expected ROI** — learned priors say the remaining gap is unlikely to close
-- **budget exhausted** — escalate or accept the current result
+- **goal reached** — verified score ≥ threshold
+- **plateau** — last three verified scores flatlined
+- **low expected ROI** — Bayesian priors say further steps unlikely to help
+- **budget / timeout / token cap / repeated output** — production stop stack
 
-Every `loopllm_loop_end` records the run, so the suggested budget and threshold for
-that `task_type` sharpen over time. See [`examples/agent_loop.py`](examples/agent_loop.py)
-for a runnable demo (cold start → plateau stop → learned budget) and
-[`docs/demo/agent_loop_demo.md`](docs/demo/agent_loop_demo.md) for a walkthrough.
+Every `loopllm_loop_end` records **verified** score trajectories so budgets sharpen
+over time. See [`examples/agent_loop.py`](examples/agent_loop.py) for the controller
+demo and [`docs/demo/agent_loop_demo.md`](docs/demo/agent_loop_demo.md) for CDV via MCP.
 
 ```python
 from loopllm import AdaptivePriors, AgentLoopController
 
 controller = AgentLoopController(AdaptivePriors())
 session = controller.start("fix flaky test", task_type="bugfix")
-verdict = controller.step(session.session_id, score=0.9)   # -> {"decision": "stop", ...}
-controller.end(session.session_id)                         # -> learns optimal depth
+verdict = controller.step(session.session_id, score=0.9)   # library API (pre-scored)
+controller.end(session.session_id)
 ```
 
 ![Adaptive agent loop demo](img/agent_loop.svg)
@@ -307,7 +323,7 @@ where $c_i$ is the confidence of the $i$-th completed task. Exponential decay we
 | `loopllm_feedback` | Rate a response (1–5); triggers SGD weight update |
 | `loopllm_suggest_config` | Bayesian-optimal loop config for a task type |
 | `loopllm_loop_start` | Begin an adaptive agent loop; returns a learned step budget |
-| `loopllm_loop_step` | Report a step's progress score; returns a continue/stop verdict |
+| `loopllm_loop_step` | Submit step artifact for Conservative Dual-Verify; returns continue/stop + channel scores |
 | `loopllm_loop_end` | Close an agent loop and learn its optimal depth |
 | `loopllm_loop_status` | Inspect an active agent-loop session |
 | `loopllm_classify_task` | Label a prompt's task type |
