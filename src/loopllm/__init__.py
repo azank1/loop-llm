@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from loopllm.adaptive_exit import BayesianExitCondition
+from loopllm.adapters import AdaptiveStopper
 from loopllm.agent_loop import AgentLoopController, AgentLoopSession
 from loopllm.elicitation import (
     ClarifyingQuestion,
@@ -51,6 +52,7 @@ __all__ = [
     "AgentLoopGuard",
     "GuardContext",
     "GuardStack",
+    "AdaptiveStopper",
     "DualVerifyScore",
     "conservative_dual_verify",
     # Elicitation

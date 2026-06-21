@@ -49,8 +49,13 @@ Benchmark (simulation, stated assumptions): adaptive uses ~41% fewer steps than 
 fixed 6-step loop while reaching the bar on 99.7% of tasks (vs 94% fixed, 34% for a
 small budget). Repro: `python benchmarks/adaptive_vs_fixed.py`.
 
-Stack: Python 3.11+, FastMCP, SQLite. MIT. ~8k LOC, 219 tests, mypy --strict + ruff
+Stack: Python 3.11+, FastMCP, SQLite. MIT. ~8k LOC, 226 tests, mypy --strict + ruff
 in CI.
+
+Install note: on Ubuntu/Debian, system Python is PEP 668 "externally managed", so a
+bare `pip install` errors — use a venv (`python3 -m venv .venv && .venv/bin/pip
+install 'loopllm[mcp]'`) or `pipx install 'loopllm[mcp]'`, then point your MCP
+config at the venv's `loopllm` binary.
 
 Repo: https://github.com/azank1/loop-llm
 Demo: `docs/demo/agent_loop_demo.md` and `examples/agent_loop.py`
@@ -76,12 +81,36 @@ Author here. Quick FAQ:
 
 **What's the catch?** Garbage-in on artifacts and evaluator config. Works in Cursor, VS Code, or any MCP client. VS Code extension adds a live prompt quality sidebar.
 
-**Install:** `pip install loopllm[mcp]` (or `pip install -e ".[mcp]"` from the repo if PyPI is behind).
+**Install:** pip install loopllm[mcp]. On Ubuntu/Debian, system Python is PEP 668 "externally managed", so use a venv: python3 -m venv .venv && .venv/bin/pip install 'loopllm[mcp]' (or pipx install 'loopllm[mcp]'). From the repo: pip install -e ".[mcp]". Then point your MCP config at the venv's loopllm binary.
+
+---
+
+## Install commands (verified locally)
+
+```bash
+# Ubuntu system pip — FAILS (PEP 668 externally-managed-environment)
+pip install loopllm
+
+# venv — OK (0.7.0); loopllm + mcp-server work
+python3 -m venv .venv && .venv/bin/pip install 'loopllm[mcp]'
+.venv/bin/loopllm mcp-server --help
+
+# fresh venv straight from PyPI — OK (0.7.0)
+python3 -m venv /tmp/loopllm-install-test
+/tmp/loopllm-install-test/bin/pip install 'loopllm[mcp]'
+
+# pipx — needs `sudo apt install pipx` first (not tested here)
+pipx install 'loopllm[mcp]'
+```
+
+In Cursor/VS Code, set the MCP `command` to the venv binary, e.g.
+`/home/<you>/loop-llm/.venv/bin/loopllm`, then reload so MCP picks it up.
 
 ---
 
 ## Tuesday submission checklist (8–10am ET)
 
+0. **Verify install (done):** `python3 -m venv /tmp/llt && /tmp/llt/bin/pip install 'loopllm[mcp]' && /tmp/llt/bin/loopllm --help` → 0.7.0 OK from PyPI. ✅
 1. Confirm [v0.7.0 release](https://github.com/azank1/loop-llm/releases/tag/v0.7.0) is visible on GitHub.
 2. Open https://news.ycombinator.com/submit
 3. **Title:** option 1 above (or tweak)

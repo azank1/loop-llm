@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`AdaptiveStopper` framework adapter** (`src/loopllm/adapters.py`): turns the
+  agent-loop controller into one enforced `should_continue(state) -> bool` /
+  `route(state, on_continue, on_stop)` predicate for LangGraph conditional edges,
+  CrewAI/AutoGen callbacks, or plain `while` loops. Uses a supplied verified score
+  or scores `state["output"]` locally via the deterministic Channel-A evaluator —
+  stopping is enforced by the router, not the model's self-grade.
+- Runnable `examples/langgraph_stopper.py` (no LangGraph dependency required) and
+  `tests/test_adapters.py`. Exported `AdaptiveStopper` from the package root.
+
 ## [0.7.0] — 2026-06-22
 
 ### Added
