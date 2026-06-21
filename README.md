@@ -1,6 +1,6 @@
 # PromptLoop
 
-[![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=22&pause=1000&color=00CFFF&center=true&vCenter=true&width=700&lines=PromptLoop+%E2%80%94+Prompt+Quality+Loop;Bayesian+Adaptive+Exit+%2B+Thompson+Sampling;MCP+Server+%E2%80%94+24+Tools+for+VS+Code+%2B+Cursor;Online+Weight+Learning+via+SGD;Intent+Elicitation+%2B+Task+Decomposition;Zero+Training+%E2%80%94+Model+Agnostic)](https://github.com/azank1/loop-llm)
+[![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=22&pause=1000&color=00CFFF&center=true&vCenter=true&width=700&lines=PromptLoop+%E2%80%94+Prompt+Quality+Loop;Bayesian+Adaptive+Exit+%2B+Thompson+Sampling;MCP+Server+%E2%80%94+28+Tools+for+VS+Code+%2B+Cursor;Online+Weight+Learning+via+SGD;Intent+Elicitation+%2B+Task+Decomposition;Zero+Training+%E2%80%94+Model+Agnostic)](https://github.com/azank1/loop-llm)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![PyPI](https://img.shields.io/badge/PyPI-promptloop-blue)](https://pypi.org/project/loopllm/)
@@ -153,7 +153,7 @@ Add `.vscode/mcp.json` to your project:
 }
 ```
 
-For Cursor use `.cursor/mcp.json` with `"mcpServers"` as the top-level key.
+Cursor users: `.cursor/mcp.json` is committed too (it uses `"mcpServers"` as the top-level key), so Cursor picks the server up automatically.
 
 ---
 
@@ -388,7 +388,7 @@ Add `.vscode/mcp.json` to your project:
 }
 ```
 
-For Cursor use `.cursor/mcp.json` with `"mcpServers"` as the top-level key.
+Cursor users: `.cursor/mcp.json` is committed too (it uses `"mcpServers"` as the top-level key), so Cursor picks the server up automatically.
 
 ---
 
