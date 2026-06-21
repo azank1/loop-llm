@@ -59,3 +59,21 @@ Caveats: Channel B is still an LLM critic (not ground truth); cold-start budgets
 are task-type defaults until ~5 observations; CDV advises your loop via MCP rather
 than running the agent harness for you. Feedback welcome — especially on verifier
 recipes for coding tasks.
+
+---
+
+## First comment (pin under post within 2 minutes)
+
+Author here. Quick FAQ:
+
+**Why dual-verify instead of self-grading?** Self-reported step scores inflate. CDV takes `min(deterministic, critic)` so either channel can veto — you optimize verified progress, not narration.
+
+**Why not just let the LLM decide when it's done?** Works until it loops or quits early. This predicts a budget up front and prints an interpretable stop reason (`plateau`, `low ROI`, `goal reached`, etc.).
+
+**Why not RL / a trained model?** No training data, O(1) memory per task type, interpretable decisions, sensible cold-start defaults.
+
+**Is the benchmark cherry-picked?** Simulation with stated assumptions (diminishing-returns curves + noise). Code in `benchmarks/`, seed fixed — poke at it.
+
+**What's the catch?** Garbage-in on artifacts and evaluator config. Works in Cursor, VS Code, or any MCP client. VS Code extension adds a live prompt quality sidebar.
+
+**Install:** `pip install loopllm[mcp]` (or `pip install -e ".[mcp]"` from the repo if PyPI is behind).
