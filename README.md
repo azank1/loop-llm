@@ -65,6 +65,50 @@ Everything runs inline via MCP Sampling — no extra chat turns, no polling.
 
 ---
 
+## Adaptive agent loops
+
+Most agent loops stop on a fixed `max_iterations` or "let the LLM decide when it's
+done." Both waste tokens or quit early. PromptLoop gives your agent's **own**
+plan → act → observe loop a statistically-grounded stop button — built on the same
+Bayesian priors used for refinement, with **no training data** required.
+
+Three MCP tools wrap any iterative task:
+
+```
+loopllm_loop_start(goal="refactor module and make tests pass", task_type="bugfix")
+  → { suggested_budget: 3, quality_threshold: 0.8, confidence: 0.0 }
+
+# after each step, report how close you got (0–1):
+loopllm_loop_step(session_id, score=0.45)  → { decision: "continue", reason: ... }
+loopllm_loop_step(session_id, score=0.88)  → { decision: "stop", reason: "Goal reached..." }
+
+loopllm_loop_end(session_id)               → learns optimal depth for next time
+```
+
+`loopllm_loop_step` returns `stop` when any of these fire — the same logic as the
+refinement engine's [`BayesianExitCondition`](src/loopllm/adaptive_exit.py):
+
+- **goal reached** — score ≥ threshold
+- **plateau** — last two deltas below the convergence band
+- **low expected ROI** — learned priors say the remaining gap is unlikely to close
+- **budget exhausted** — escalate or accept the current result
+
+Every `loopllm_loop_end` records the run, so the suggested budget and threshold for
+that `task_type` sharpen over time. See [`examples/agent_loop.py`](examples/agent_loop.py)
+for a runnable demo (cold start → plateau stop → learned budget) and
+[`docs/demo/agent_loop_demo.md`](docs/demo/agent_loop_demo.md) for a walkthrough.
+
+```python
+from loopllm import AdaptivePriors, AgentLoopController
+
+controller = AgentLoopController(AdaptivePriors())
+session = controller.start("fix flaky test", task_type="bugfix")
+verdict = controller.step(session.session_id, score=0.9)   # -> {"decision": "stop", ...}
+controller.end(session.session_id)                         # -> learns optimal depth
+```
+
+---
+
 ## Quickstart
 
 ```bash
@@ -195,7 +239,7 @@ where $c_i$ is the confidence of the $i$-th completed task. Exponential decay we
 
 ---
 
-## Tools (24)
+## Tools (28)
 
 | Tool | What it does |
 |---|---|
@@ -216,6 +260,10 @@ where $c_i$ is the confidence of the $i$-th completed task. Exponential decay we
 | `loopllm_prompt_stats` | Prompting quality trend and learning curve |
 | `loopllm_feedback` | Rate a response (1–5); triggers SGD weight update |
 | `loopllm_suggest_config` | Bayesian-optimal loop config for a task type |
+| `loopllm_loop_start` | Begin an adaptive agent loop; returns a learned step budget |
+| `loopllm_loop_step` | Report a step's progress score; returns a continue/stop verdict |
+| `loopllm_loop_end` | Close an agent loop and learn its optimal depth |
+| `loopllm_loop_status` | Inspect an active agent-loop session |
 | `loopllm_classify_task` | Label a prompt's task type |
 | `loopllm_analyze_prompt` | Generate clarifying questions ranked by Thompson-sampled gain |
 | `loopllm_list_tasks` | List tasks from the persistent store |
@@ -381,7 +429,7 @@ result logged to ~/.loopllm/store.db
 
 ---
 
-## Tools (24)
+## Tools (28)
 
 | Tool | What it does |
 |---|---|
@@ -402,6 +450,10 @@ result logged to ~/.loopllm/store.db
 | `loopllm_prompt_stats` | Prompting quality trend and learning curve |
 | `loopllm_feedback` | Rate a response (1–5) to improve future scoring |
 | `loopllm_suggest_config` | Bayesian-optimal loop config for a task type |
+| `loopllm_loop_start` | Begin an adaptive agent loop; returns a learned step budget |
+| `loopllm_loop_step` | Report a step's progress score; returns a continue/stop verdict |
+| `loopllm_loop_end` | Close an agent loop and learn its optimal depth |
+| `loopllm_loop_status` | Inspect an active agent-loop session |
 | `loopllm_classify_task` | Label a prompt's task type |
 | `loopllm_analyze_prompt` | Generate clarifying questions ranked by information gain |
 | `loopllm_list_tasks` | List tasks from the persistent store |

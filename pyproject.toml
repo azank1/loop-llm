@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "loopllm"
-version = "0.5.0"
+version = "0.6.0"
 description = "MCP server that observes every prompt, scores quality in real time, and closes the loop with iterative refinement. Built on FastMCP, SQLite, and Bayesian priors — no extra LLM required."
 readme = "README.md"
 requires-python = ">=3.11"

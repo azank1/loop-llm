@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from loopllm.adaptive_exit import BayesianExitCondition
+from loopllm.agent_loop import AgentLoopController, AgentLoopSession
 from loopllm.elicitation import (
     ClarifyingQuestion,
     ElicitationSession,
@@ -24,7 +25,7 @@ from loopllm.priors import AdaptivePriors, CallObservation
 from loopllm.store import LoopStore, SQLiteBackedPriors
 from loopllm.tasks import Task, TaskOrchestrator, TaskPlan, TaskState
 
-__version__ = "0.4.0"
+__version__ = "0.6.0"
 
 __all__ = [
     # Engine
@@ -42,6 +43,9 @@ __all__ = [
     "AdaptivePriors",
     "CallObservation",
     "BayesianExitCondition",
+    # Agent loops
+    "AgentLoopController",
+    "AgentLoopSession",
     # Elicitation
     "IntentRefiner",
     "IntentSpec",
