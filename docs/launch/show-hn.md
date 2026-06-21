@@ -77,3 +77,16 @@ Author here. Quick FAQ:
 **What's the catch?** Garbage-in on artifacts and evaluator config. Works in Cursor, VS Code, or any MCP client. VS Code extension adds a live prompt quality sidebar.
 
 **Install:** `pip install loopllm[mcp]` (or `pip install -e ".[mcp]"` from the repo if PyPI is behind).
+
+---
+
+## Tuesday submission checklist (8–10am ET)
+
+1. Confirm [v0.7.0 release](https://github.com/azank1/loop-llm/releases/tag/v0.7.0) is visible on GitHub.
+2. Open https://news.ycombinator.com/submit
+3. **Title:** option 1 above (or tweak)
+4. **URL:** `https://github.com/azank1/loop-llm`
+5. **Text:** copy the **Text** section above (plain text; HN strips markdown)
+6. Submit, then paste the **First comment** as a reply within 2 minutes
+7. Stay online 2–3 hours for questions
+8. Do not cross-post Reddit/X in the same hour — wait a few hours if you want secondary channels
