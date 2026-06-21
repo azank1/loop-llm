@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "loopllm": {
+      "command": "loopllm",
+      "args": ["mcp-server", "--provider", "agent"],
+      "env": {
+        "LOOPLLM_MODEL": "agent"
+      }
+    }
+  }
+}

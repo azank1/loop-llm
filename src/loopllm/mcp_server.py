@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from loopllm.agent_loop import AgentLoopController
 from loopllm.elicitation import ElicitationSession, IntentRefiner, IntentSpec
 from loopllm.engine import CompositeEvaluator, LoopConfig, LoopedLLM
 from loopllm.evaluators import (
@@ -47,6 +48,7 @@ _priors: SQLiteBackedPriors | None = None
 _provider: LLMProvider | None = None
 _default_model: str = "gpt-4o-mini"
 _active_sessions: dict[str, dict[str, Any]] = {}
+_agent_loop: AgentLoopController | None = None
 _status_path: Path | None = None
 _history_path: Path | None = None
 # Last per-dimension scores computed by _score_prompt_quality — used by SGD.
@@ -168,6 +170,14 @@ def _get_priors() -> SQLiteBackedPriors:
     _init_state()
     assert _priors is not None
     return _priors
+
+
+def _get_agent_loop() -> AgentLoopController:
+    """Return the process-wide agent-loop controller, bound to shared priors."""
+    global _agent_loop  # noqa: PLW0603
+    if _agent_loop is None:
+        _agent_loop = AgentLoopController(_get_priors())
+    return _agent_loop
 
 
 def _build_evaluator(
@@ -1364,6 +1374,81 @@ def _tool_suggest_config(
     return json.dumps(config, indent=2, default=str)
 
 
+# ---------------------------------------------------------------------------
+# Adaptive agent-loop tools — Bayesian stop/continue control for agent loops
+# ---------------------------------------------------------------------------
+
+
+def _tool_loop_start(
+    goal: str,
+    task_type: str = "general",
+    model_id: str | None = None,
+    quality_threshold: float | None = None,
+    cost_weight: float = 0.5,
+) -> str:
+    """Begin an adaptive agent-loop session and return a suggested step budget."""
+    controller = _get_agent_loop()
+    mod = model_id or _get_model()
+    session = controller.start(
+        goal=goal,
+        task_type=task_type,
+        model_id=mod,
+        quality_threshold=quality_threshold,
+        cost_weight=cost_weight,
+    )
+    return json.dumps(
+        {
+            "session_id": session.session_id,
+            "goal": session.goal,
+            "task_type": session.task_type,
+            "model_id": session.model_id,
+            "suggested_budget": session.suggested_budget,
+            "quality_threshold": round(session.quality_threshold, 3),
+            "confidence": round(session.confidence, 3),
+            "total_observations": session.total_observations,
+            "guidance": (
+                f"Run up to ~{session.suggested_budget} step(s). After each step, "
+                f"call loopllm_loop_step with a progress score in [0,1]. Stop when "
+                f"the verdict says 'stop', then call loopllm_loop_end."
+            ),
+        },
+        indent=2,
+        default=str,
+    )
+
+
+def _tool_loop_step(session_id: str, score: float, note: str = "") -> str:
+    """Report a step's progress score and get a continue/stop verdict."""
+    controller = _get_agent_loop()
+    try:
+        verdict = controller.step(session_id, score, note)
+    except KeyError as exc:
+        return json.dumps({"error": str(exc)})
+    except ValueError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps(verdict, indent=2, default=str)
+
+
+def _tool_loop_end(session_id: str, converged: bool | None = None) -> str:
+    """Finalise an agent loop and learn from it for future budget predictions."""
+    controller = _get_agent_loop()
+    try:
+        summary = controller.end(session_id, converged)
+    except KeyError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps(summary, indent=2, default=str)
+
+
+def _tool_loop_status(session_id: str) -> str:
+    """Inspect the current state of an active agent-loop session."""
+    controller = _get_agent_loop()
+    try:
+        status = controller.status(session_id)
+    except KeyError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps(status, indent=2, default=str)
+
+
 def _tool_list_tasks(
     state: str | None = None,
     limit: int = 20,
@@ -2004,6 +2089,11 @@ def create_mcp_server() -> Any:
             "you should follow. Do NOT skip this step.\n\n"
             "The intercept tool returns a quality gauge, routing recommendation "
             "(elicit/refine/decompose), and suggestions. Follow its guidance.\n\n"
+            "For multi-step / iterative tasks (where you plan → act → observe → "
+            "repeat), drive the loop through loopllm_loop_start, then "
+            "loopllm_loop_step after each step (reporting a progress score), and "
+            "loopllm_loop_end when it stops. The step tool tells you when to stop "
+            "based on learned priors so you don't loop forever.\n\n"
             "After presenting results to the user, call loopllm_feedback with "
             "the user's quality rating (1-5) to improve future predictions.\n\n"
             "Periodically call loopllm_prompt_stats to show the user their "
@@ -2277,6 +2367,66 @@ def create_mcp_server() -> Any:
         cost_weight: float = 0.5,
     ) -> str:
         return _tool_suggest_config(task_type, model_id, cost_weight)
+
+    # -- Adaptive agent-loop tools --
+
+    @mcp.tool(
+        name="loopllm_loop_start",
+        description=(
+            "Begin an ADAPTIVE AGENT LOOP for a multi-step task. Use this when "
+            "you are about to iterate (plan → act → observe → repeat) rather than "
+            "answer in one shot. Returns a learned step budget, a quality "
+            "threshold, and confidence — derived from Bayesian priors over past "
+            "loops of this task_type (no training data needed). Drive every "
+            "iterative task through loop_start → loop_step → loop_end so the "
+            "system learns how deep to loop and stops you from looping forever."
+        ),
+    )
+    def loop_start(
+        goal: str,
+        task_type: str = "general",
+        model_id: str | None = None,
+        quality_threshold: float | None = None,
+        cost_weight: float = 0.5,
+    ) -> str:
+        return _tool_loop_start(goal, task_type, model_id, quality_threshold, cost_weight)
+
+    @mcp.tool(
+        name="loopllm_loop_step",
+        description=(
+            "Report the result of ONE agent-loop step and get a statistically-"
+            "grounded continue/stop verdict. Pass the session_id from "
+            "loopllm_loop_start and a progress score in [0,1] (how close the "
+            "latest step got you to the goal). Returns decision='continue' or "
+            "'stop' with a reason: it stops on goal reached, plateaued progress, "
+            "low expected ROI (Bayesian), or exhausted budget. Honor the verdict."
+        ),
+    )
+    def loop_step(session_id: str, score: float, note: str = "") -> str:
+        return _tool_loop_step(session_id, score, note)
+
+    @mcp.tool(
+        name="loopllm_loop_end",
+        description=(
+            "Close an agent loop and LEARN from it. Call once the loop stops. "
+            "Records the run (step scores, whether it converged) into the "
+            "Bayesian priors so future loops of this task_type get a better step "
+            "budget. Returns a summary of what the system now believes "
+            "(optimal_depth, converge_rate, confidence)."
+        ),
+    )
+    def loop_end(session_id: str, converged: bool | None = None) -> str:
+        return _tool_loop_end(session_id, converged)
+
+    @mcp.tool(
+        name="loopllm_loop_status",
+        description=(
+            "Inspect an active agent-loop session: steps used, suggested budget, "
+            "score trajectory, and the last continue/stop verdict."
+        ),
+    )
+    def loop_status(session_id: str) -> str:
+        return _tool_loop_status(session_id)
 
     @mcp.tool(
         name="loopllm_list_tasks",
