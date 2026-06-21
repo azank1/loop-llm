@@ -20,8 +20,8 @@ venv/
 *.swp
 *.swo
 
-# Docs (design notes, not functional)
-docs/
+# Generated docs build output (hand-written docs/ are tracked)
+docs/_build/
 
 # mypy
 .mypy_cache/
