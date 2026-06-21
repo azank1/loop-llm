@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-06-22
+
+### Added
+- **Conservative Dual-Verify (CDV) for agent loops.** Agents submit `step_output`
+  artifacts; the MCP server scores each step through two independent channels:
+  - **Channel A:** deterministic evaluators (regex, JSON, completeness, composite).
+  - **Channel B:** separate critic via MCP sampling (verifier hat).
+  - **Final score:** `min(channel_a, channel_b)` — the stricter channel wins.
+- New modules: `src/loopllm/step_scorer.py`, `src/loopllm/guards.py`,
+  `src/loopllm/evaluator_factory.py`.
+- Composable **guard stack** on verified scores: timeout, token budget, output-repeat,
+  plateau, threshold, Bayesian ROI, max steps, budget exhausted.
+- `loopllm_loop_start` accepts verifier recipe (`evaluator_type`, `quality_criteria`,
+  `required_patterns`, `max_wall_ms`, `max_tokens`).
+- `loopllm_loop_step` is now async and artifact-primary (`step_output`); legacy
+  `score` self-report still works with deprecation warning.
+- Verdict JSON exposes `channel_a_score`, `channel_b_score`, `score_source`,
+  `deficiencies` for demos and debugging.
+- Tests: `tests/test_step_scorer.py`, `tests/test_guards.py` (CDV inflation-block test).
+- Package exports: `DualVerifyScore`, `conservative_dual_verify`, `GuardStack`.
+
+### Changed
+- `AgentLoopController` uses `GuardStack` instead of inline `_decide` logic.
+- `AgentLoopSession` stores verifier config, step artifacts, token accumulators.
+- `CallObservation.prompt_tokens` / `completion_tokens` populated on `loop_end`.
+- README and demo doc reframed around Conservative Dual-Verify.
+
 ## [0.6.0] — 2026-06-21
 
 ### Added

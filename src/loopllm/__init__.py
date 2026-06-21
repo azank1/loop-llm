@@ -21,11 +21,13 @@ from loopllm.engine import (
     LoopMetrics,
     RefinementResult,
 )
+from loopllm.guards import AgentLoopGuard, GuardContext, GuardStack
 from loopllm.priors import AdaptivePriors, CallObservation
+from loopllm.step_scorer import DualVerifyScore, conservative_dual_verify
 from loopllm.store import LoopStore, SQLiteBackedPriors
 from loopllm.tasks import Task, TaskOrchestrator, TaskPlan, TaskState
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = [
     # Engine
@@ -46,6 +48,11 @@ __all__ = [
     # Agent loops
     "AgentLoopController",
     "AgentLoopSession",
+    "AgentLoopGuard",
+    "GuardContext",
+    "GuardStack",
+    "DualVerifyScore",
+    "conservative_dual_verify",
     # Elicitation
     "IntentRefiner",
     "IntentSpec",

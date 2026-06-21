@@ -1,15 +1,9 @@
 """Adaptive agent-loop control built on the Bayesian priors layer.
 
-This generalizes the prompt-refinement loop's Bayesian early-exit (see
-:class:`loopllm.adaptive_exit.BayesianExitCondition`) to *arbitrary agent
-loops*. The agent runs its own plan/act/observe steps and reports a progress
-score after each step; the controller returns a continue/stop verdict using the
-same learned priors, then records the completed run so future step budgets
-improve for that ``(task_type, model)`` pair.
-
-It deliberately reuses :class:`loopllm.priors.AdaptivePriors` — no new model and
-no training data: predictions start from sensible priors and sharpen as loops
-are observed.
+Agent loops use Conservative Dual-Verify (CDV) at the MCP boundary: step
+artifacts are scored externally before entering this controller. The controller
+applies a composable guard stack and learns optimal depth from verified score
+trajectories.
 """
 from __future__ import annotations
 
@@ -20,37 +14,24 @@ from typing import Any
 
 import structlog
 
+from loopllm.guards import (
+    CONVERGENCE_DELTA,
+    MAX_STEPS_DEFAULT,
+    AgentLoopGuard,
+    GuardContext,
+    GuardStack,
+    default_guard_stack,
+)
 from loopllm.priors import AdaptivePriors, CallObservation
 
 logger = structlog.get_logger(__name__)
 
-# Hard safety cap on agent-loop steps, independent of the learned budget.
-MAX_STEPS = 10
-# Plateau threshold: stop if the last two score deltas are both below this.
-CONVERGENCE_DELTA = 0.01
+MAX_STEPS = MAX_STEPS_DEFAULT
 
 
 @dataclass
 class AgentLoopSession:
-    """Mutable state for a single adaptive agent-loop run.
-
-    Attributes:
-        session_id: Short unique identifier for this loop.
-        goal: Human-readable description of what the loop is trying to achieve.
-        task_type: Identifier for the task class (drives prior selection).
-        model_id: Identifier for the model the agent is using.
-        quality_threshold: Progress score at which the loop is considered done.
-        suggested_budget: Learned/recommended number of steps for this task.
-        cost_weight: Weight given to cost vs. quality when budgeting.
-        confidence: Confidence in the suggested budget (0–1).
-        total_observations: How many prior loops informed the suggestion.
-        scores: Per-step progress scores in [0, 1].
-        latencies_ms: Per-step wall-clock latency in milliseconds.
-        notes: Optional per-step notes recorded by the agent.
-        last_decision: The most recent continue/stop verdict.
-        converged: Whether the loop reached its goal (set on close).
-        closed: Whether the loop has been finalised and learned from.
-    """
+    """Mutable state for a single adaptive agent-loop run."""
 
     session_id: str
     goal: str
@@ -69,24 +50,38 @@ class AgentLoopSession:
     last_decision: str = "continue"
     converged: bool | None = None
     closed: bool = False
+    # CDV verifier recipe (configured at start)
+    evaluator_type: str = "composite"
+    evaluator_kwargs: dict[str, Any] = field(default_factory=dict)
+    quality_criteria: list[str] = field(default_factory=list)
+    max_wall_ms: float = 300_000.0
+    max_tokens: int = 0
+    step_outputs: list[str] = field(default_factory=list)
+    step_fingerprints: list[str] = field(default_factory=list)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 class AgentLoopController:
-    """Advises an agent's own multi-step loop on when to stop, and learns.
+    """Advises an agent's multi-step loop on when to stop, and learns.
 
-    Bind one controller to an :class:`AdaptivePriors` instance (the same
-    SQLite-backed priors the refinement loop uses). The lifecycle is
-    ``start`` → repeated ``step`` → ``end``.
-
-    Args:
-        priors: The adaptive priors manager holding learned beliefs.
+    Lifecycle: ``start`` → repeated ``step`` → ``end``.
     """
 
-    def __init__(self, priors: AdaptivePriors) -> None:
+    def __init__(
+        self,
+        priors: AdaptivePriors,
+        guards: AgentLoopGuard | GuardStack | None = None,
+        max_steps: int = MAX_STEPS,
+    ) -> None:
         self._priors = priors
         self._sessions: dict[str, AgentLoopSession] = {}
-
-    # -- lifecycle -----------------------------------------------------------
+        if guards is None:
+            self._guards = default_guard_stack(priors, max_steps)
+        elif isinstance(guards, GuardStack):
+            self._guards = guards
+        else:
+            self._guards = GuardStack([guards])
 
     def start(
         self,
@@ -95,19 +90,13 @@ class AgentLoopController:
         model_id: str = "unknown",
         quality_threshold: float | None = None,
         cost_weight: float = 0.5,
+        evaluator_type: str = "composite",
+        quality_criteria: list[str] | None = None,
+        max_wall_ms: float = 300_000.0,
+        max_tokens: int = 0,
+        **evaluator_kwargs: Any,
     ) -> AgentLoopSession:
-        """Begin a new adaptive agent-loop session.
-
-        Args:
-            goal: What the loop is trying to achieve.
-            task_type: Identifier for the task class.
-            model_id: Identifier for the model the agent is using.
-            quality_threshold: Override the learned threshold if provided.
-            cost_weight: Weight given to cost vs. quality (0 = quality only).
-
-        Returns:
-            A fresh :class:`AgentLoopSession` with a suggested step budget.
-        """
+        """Begin a new adaptive agent-loop session."""
         suggestion = self._priors.suggest_config(task_type, model_id, cost_weight)
         budget = int(suggestion["max_iterations"])
         threshold = (
@@ -116,6 +105,10 @@ class AgentLoopController:
             else float(suggestion["quality_threshold"])
         )
         meta = suggestion.get("metadata", {})
+        criteria = list(quality_criteria or [])
+        if not criteria and goal:
+            criteria = [goal]
+
         session = AgentLoopSession(
             session_id=uuid.uuid4().hex[:12],
             goal=goal,
@@ -126,6 +119,11 @@ class AgentLoopController:
             cost_weight=cost_weight,
             confidence=float(meta.get("confidence", 0.0)),
             total_observations=int(meta.get("total_observations", 0)),
+            evaluator_type=evaluator_type,
+            evaluator_kwargs=dict(evaluator_kwargs),
+            quality_criteria=criteria,
+            max_wall_ms=max_wall_ms,
+            max_tokens=max_tokens,
         )
         self._sessions[session.session_id] = session
         logger.info(
@@ -134,25 +132,19 @@ class AgentLoopController:
             task_type=task_type,
             suggested_budget=session.suggested_budget,
             confidence=session.confidence,
+            evaluator_type=evaluator_type,
         )
         return session
 
-    def step(self, session_id: str, score: float, note: str = "") -> dict[str, Any]:
-        """Report a completed step and get a continue/stop verdict.
-
-        Args:
-            session_id: The session to advance.
-            score: Progress score for this step, clamped to [0, 1].
-            note: Optional note describing what the step did.
-
-        Returns:
-            A verdict dict with ``decision`` ("continue" or "stop"), a
-            human-readable ``reason``, and loop diagnostics.
-
-        Raises:
-            KeyError: If the session does not exist.
-            ValueError: If the session has already been closed.
-        """
+    def step(
+        self,
+        session_id: str,
+        score: float,
+        note: str = "",
+        step_output: str = "",
+        step_tokens: int = 0,
+    ) -> dict[str, Any]:
+        """Advance a session with a verified (or legacy) progress score."""
         session = self._require(session_id)
         if session.closed:
             raise ValueError(f"Session already closed: {session_id}")
@@ -164,13 +156,18 @@ class AgentLoopController:
         session.scores.append(score)
         if note:
             session.notes.append(note)
+        if step_output:
+            session.step_outputs.append(step_output)
+        if step_tokens > 0:
+            session.completion_tokens += step_tokens
+            session.prompt_tokens += max(step_tokens // 4, 1)
 
         steps_used = len(session.scores)
         expected_delta, uncertainty = self._priors.expected_improvement(
             session.task_type, session.model_id, steps_used
         )
 
-        decision, reason = self._decide(session, score, steps_used)
+        decision, reason = self._decide(session, score, steps_used, step_output)
         session.last_decision = decision
 
         verdict: dict[str, Any] = {
@@ -185,27 +182,16 @@ class AgentLoopController:
             "uncertainty": round(uncertainty, 4),
             "score_trajectory": [round(s, 4) for s in session.scores],
         }
-        logger.debug("agent_loop_step", **{k: verdict[k] for k in ("session_id", "decision", "steps_used")})
+        logger.debug(
+            "agent_loop_step",
+            session_id=session.session_id,
+            decision=decision,
+            steps_used=steps_used,
+        )
         return verdict
 
     def end(self, session_id: str, converged: bool | None = None) -> dict[str, Any]:
-        """Finalise a loop and learn from it.
-
-        Builds a :class:`CallObservation` from the recorded steps and updates
-        the priors so future budgets for this ``(task_type, model)`` improve.
-        Idempotent: calling twice does not double-count the observation.
-
-        Args:
-            session_id: The session to close.
-            converged: Whether the goal was reached. Inferred from the final
-                score vs. threshold when omitted.
-
-        Returns:
-            A summary dict including what the system learned.
-
-        Raises:
-            KeyError: If the session does not exist.
-        """
+        """Finalise a loop and learn from verified score trajectories."""
         session = self._require(session_id)
         if not session.closed:
             if converged is None:
@@ -221,6 +207,8 @@ class AgentLoopController:
                 total_iterations=len(session.scores),
                 max_iterations=session.suggested_budget,
                 quality_threshold=session.quality_threshold,
+                prompt_tokens=session.prompt_tokens,
+                completion_tokens=session.completion_tokens,
             )
             self._priors.observe(observation)
             session.converged = converged
@@ -250,11 +238,7 @@ class AgentLoopController:
         }
 
     def status(self, session_id: str) -> dict[str, Any]:
-        """Return the current state of an active session.
-
-        Raises:
-            KeyError: If the session does not exist.
-        """
+        """Return the current state of an active session."""
         session = self._require(session_id)
         return {
             "session_id": session.session_id,
@@ -268,61 +252,32 @@ class AgentLoopController:
             "last_decision": session.last_decision,
             "closed": session.closed,
             "converged": session.converged,
+            "evaluator_type": session.evaluator_type,
+            "quality_criteria": session.quality_criteria,
         }
 
-    # -- internals -----------------------------------------------------------
+    def get_session(self, session_id: str) -> AgentLoopSession:
+        """Return the raw session object (for MCP CDV wiring)."""
+        return self._require(session_id)
 
     def _decide(
-        self, session: AgentLoopSession, score: float, steps_used: int
+        self,
+        session: AgentLoopSession,
+        score: float,
+        steps_used: int,
+        step_output: str = "",
     ) -> tuple[str, str]:
-        """Decide whether the loop should continue, mirroring engine.py order."""
-        # 1. Quality threshold reached.
-        if score >= session.quality_threshold:
-            return "stop", (
-                f"Goal reached: score={score:.3f} >= threshold "
-                f"{session.quality_threshold:.2f} at step {steps_used}"
-            )
-
-        # 2. Plateau / convergence over the last three steps.
-        if len(session.scores) >= 3:
-            delta1 = abs(session.scores[-1] - session.scores[-2])
-            delta2 = abs(session.scores[-2] - session.scores[-3])
-            if delta1 < CONVERGENCE_DELTA and delta2 < CONVERGENCE_DELTA:
-                return "stop", (
-                    f"Progress plateaued (last deltas {delta1:.4f}, {delta2:.4f} "
-                    f"< {CONVERGENCE_DELTA:.4f}); further steps unlikely to help"
-                )
-
-        # 3. Bayesian verdict from learned priors (same logic as
-        #    BayesianExitCondition): is the remaining gap likely to be bridged?
-        should_go = self._priors.should_continue(
-            session.task_type,
-            session.model_id,
-            steps_used,
-            score,
-            list(session.scores),
-            quality_threshold=session.quality_threshold,
+        """Run guard stack; continue if no guard fires."""
+        ctx = GuardContext(
+            session=session,
+            iteration=steps_used,
+            current_score=score,
+            scores_so_far=list(session.scores),
+            step_output=step_output,
         )
-        if not should_go:
-            expected_delta, uncertainty = self._priors.expected_improvement(
-                session.task_type, session.model_id, steps_used
-            )
-            return "stop", (
-                f"Bayesian stop at step {steps_used}: score={score:.3f}, "
-                f"E[delta]={expected_delta:.3f}±{uncertainty:.3f}, "
-                f"threshold={session.quality_threshold:.2f} (low expected ROI)"
-            )
-
-        # 4. Learned step budget exhausted.
-        if steps_used >= session.suggested_budget:
-            return "stop", (
-                f"Step budget exhausted ({steps_used}/{session.suggested_budget}); "
-                f"escalate or accept current result"
-            )
-
-        # 5. Hard safety cap.
-        if steps_used >= MAX_STEPS:
-            return "stop", f"Hard step cap reached ({MAX_STEPS})"
+        reason = self._guards.evaluate(ctx)
+        if reason is not None:
+            return "stop", reason.message
 
         return "continue", (
             f"Keep going: step {steps_used}/{session.suggested_budget}, "
@@ -333,3 +288,12 @@ class AgentLoopController:
         if session_id not in self._sessions:
             raise KeyError(f"Unknown agent-loop session: {session_id}")
         return self._sessions[session_id]
+
+
+# Re-export for backward compatibility
+__all__ = [
+    "AgentLoopController",
+    "AgentLoopSession",
+    "CONVERGENCE_DELTA",
+    "MAX_STEPS",
+]

@@ -1,16 +1,21 @@
-# Demo: Adaptive Agent Loops
+# Demo: Adaptive Agent Loops — Conservative Dual-Verify
 
-A 60-second walkthrough of `loopllm`'s adaptive agent loops — the feature that
-gives an agent's own plan → act → observe loop a statistically-grounded stop button.
+A walkthrough of `loopllm`'s adaptive agent loops with **Conservative Dual-Verify
+(CDV)**: agents submit step artifacts; the server scores them through two
+independent channels (deterministic evaluators + separate critic call); the
+stricter score drives when to stop and what the system learns.
 
-## Run it
+## Run the terminal demo
 
 ```bash
 pip install -e ".[dev]"
 python examples/agent_loop.py
 ```
 
-## What you'll see
+This exercises `AgentLoopController` directly with pre-computed scores (library
+API). For CDV via MCP, see below.
+
+## What you'll see (terminal)
 
 The demo drives three loops through `AgentLoopController` and prints each step's
 continue/stop verdict.
@@ -47,15 +52,48 @@ Now the controller's beliefs are informed by real data:
   optimal_depth=2.06 converge_rate=0.895 confidence=0.63 first_call_quality=0.497
 ```
 
-## Try it through MCP (Claude Code / Cursor)
+## Try CDV through MCP (Cursor / VS Code)
 
-With the server running (`loopllm mcp-server`), drive any iterative task:
+With the server running (`loopllm mcp-server`), use **Conservative Dual-Verify**
+— submit `step_output`, not your own score:
 
 ```
-loopllm_loop_start  goal="make the failing test pass" task_type="bugfix"
-loopllm_loop_step   session_id=<id> score=0.4
-loopllm_loop_step   session_id=<id> score=0.9     # -> decision: "stop"
-loopllm_loop_end    session_id=<id>               # -> learns optimal depth
+loopllm_loop_start(
+  goal="make the failing test pass",
+  task_type="bugfix",
+  required_patterns=["tests passed"],
+)
+
+loopllm_loop_step(
+  session_id=<id>,
+  step_output="pytest: 3 FAILED, 12 passed",
+)
+# → channel_a_score: 0.0 (regex miss), channel_b_score: 0.55, score: 0.0, decision: continue
+
+loopllm_loop_step(
+  session_id=<id>,
+  step_output="pytest: 42 passed, 0 failed",
+)
+# → channel_a_score: 1.0, score_source: conservative_dual_verify, decision: stop
+
+loopllm_loop_end(session_id=<id>)
+```
+
+### Cursor Agent chat script (screen recording)
+
+Paste into Agent mode:
+
+```
+Run an adaptive agent loop with Conservative Dual-Verify:
+
+1. loopllm_loop_start with goal="make the failing test pass" task_type="bugfix"
+   required_patterns=["passed"]
+2. loopllm_loop_step with step_output="pytest: 3 FAILED"
+3. loopllm_loop_step with step_output="pytest: 42 passed, 0 failed"
+4. loopllm_loop_end
+
+After each loop_step, show the full JSON including channel_a_score,
+channel_b_score, score_source, and deficiencies.
 ```
 
 ## Recording an asciinema cast (for the launch)

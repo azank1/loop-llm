@@ -21,11 +21,12 @@ from typing import Any
 
 from loopllm.agent_loop import AgentLoopController
 from loopllm.elicitation import ElicitationSession, IntentRefiner, IntentSpec
-from loopllm.engine import CompositeEvaluator, LoopConfig, LoopedLLM
-from loopllm.evaluators import (
-    JSONSchemaEvaluator,
-    LengthEvaluator,
-    RegexEvaluator,
+from loopllm.engine import LoopConfig, LoopedLLM
+from loopllm.evaluator_factory import build_evaluator
+from loopllm.step_scorer import (
+    conservative_dual_verify,
+    legacy_self_report_score,
+    build_step_evaluator,
 )
 from loopllm.priors import CallObservation
 from loopllm.provider import LLMProvider
@@ -183,34 +184,9 @@ def _get_agent_loop() -> AgentLoopController:
 def _build_evaluator(
     evaluator_type: str = "length",
     **kwargs: Any,
-) -> LengthEvaluator | RegexEvaluator | JSONSchemaEvaluator | CompositeEvaluator:
+) -> Any:
     """Build an evaluator from a type string and optional config."""
-    if evaluator_type == "json":
-        return JSONSchemaEvaluator(
-            required_fields=kwargs.get("required_fields", []),
-            field_types={},
-        )
-    elif evaluator_type == "regex":
-        return RegexEvaluator(
-            required=kwargs.get("required_patterns", []),
-            forbidden=kwargs.get("forbidden_patterns", []),
-        )
-    elif evaluator_type == "composite":
-        evals: list[Any] = []
-        if kwargs.get("required_fields"):
-            evals.append(JSONSchemaEvaluator(required_fields=kwargs["required_fields"]))
-        if kwargs.get("required_patterns"):
-            evals.append(RegexEvaluator(required=kwargs["required_patterns"]))
-        evals.append(LengthEvaluator(
-            min_words=kwargs.get("min_words", 5),
-            max_words=kwargs.get("max_words", 10_000),
-        ))
-        return CompositeEvaluator(evaluators=evals)
-    else:
-        return LengthEvaluator(
-            min_words=kwargs.get("min_words", 5),
-            max_words=kwargs.get("max_words", 10_000),
-        )
+    return build_evaluator(evaluator_type, **kwargs)
 
 
 def _result_to_dict(result: Any) -> dict[str, Any]:
@@ -1385,16 +1361,33 @@ def _tool_loop_start(
     model_id: str | None = None,
     quality_threshold: float | None = None,
     cost_weight: float = 0.5,
+    evaluator_type: str = "composite",
+    quality_criteria: list[str] | None = None,
+    required_patterns: list[str] | None = None,
+    required_fields: list[str] | None = None,
+    max_wall_ms: float = 300_000.0,
+    max_tokens: int = 0,
 ) -> str:
-    """Begin an adaptive agent-loop session and return a suggested step budget."""
+    """Begin an adaptive agent-loop session with a CDV verifier recipe."""
     controller = _get_agent_loop()
     mod = model_id or _get_model()
+    eval_kwargs: dict[str, Any] = {}
+    if required_patterns:
+        eval_kwargs["required_patterns"] = required_patterns
+    if required_fields:
+        eval_kwargs["required_fields"] = required_fields
+
     session = controller.start(
         goal=goal,
         task_type=task_type,
         model_id=mod,
         quality_threshold=quality_threshold,
         cost_weight=cost_weight,
+        evaluator_type=evaluator_type,
+        quality_criteria=quality_criteria,
+        max_wall_ms=max_wall_ms,
+        max_tokens=max_tokens,
+        **eval_kwargs,
     )
     return json.dumps(
         {
@@ -1406,9 +1399,13 @@ def _tool_loop_start(
             "quality_threshold": round(session.quality_threshold, 3),
             "confidence": round(session.confidence, 3),
             "total_observations": session.total_observations,
+            "evaluator_type": session.evaluator_type,
+            "quality_criteria": session.quality_criteria,
             "guidance": (
                 f"Run up to ~{session.suggested_budget} step(s). After each step, "
-                f"call loopllm_loop_step with a progress score in [0,1]. Stop when "
+                f"call loopllm_loop_step with step_output=<artifact> (test log, diff, "
+                f"summary). The server runs Conservative Dual-Verify (deterministic "
+                f"checks + separate critic) — do NOT pass your own score. Stop when "
                 f"the verdict says 'stop', then call loopllm_loop_end."
             ),
         },
@@ -1417,15 +1414,74 @@ def _tool_loop_start(
     )
 
 
-def _tool_loop_step(session_id: str, score: float, note: str = "") -> str:
-    """Report a step's progress score and get a continue/stop verdict."""
+async def _tool_loop_step(
+    session_id: str,
+    step_output: str = "",
+    score: float | None = None,
+    note: str = "",
+    step_tokens: int = 0,
+    ctx: Context[Any, Any, Any] | None = None,
+) -> str:
+    """Score a step artifact via CDV and return a continue/stop verdict."""
     controller = _get_agent_loop()
     try:
-        verdict = controller.step(session_id, score, note)
+        session = controller.get_session(session_id)
+    except KeyError as exc:
+        return json.dumps({"error": str(exc)})
+
+    cdv_meta: dict[str, Any] = {}
+    if step_output:
+        evaluator = build_step_evaluator(
+            session.evaluator_type,
+            session.quality_criteria,
+            **session.evaluator_kwargs,
+        )
+        try:
+            dual = await conservative_dual_verify(
+                step_output=step_output,
+                goal=session.goal,
+                quality_criteria=session.quality_criteria,
+                evaluator=evaluator,
+                ctx=ctx,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return json.dumps({
+                "error": f"CDV scoring failed: {exc}",
+                "hint": "Pass step_output with the step artifact for verified scoring.",
+            })
+        final_score = dual.final_score
+        cdv_meta = dual.to_dict()
+    elif score is not None:
+        dual = legacy_self_report_score(score)
+        final_score = dual.final_score
+        cdv_meta = dual.to_dict()
+        cdv_meta["deprecation"] = (
+            "Self-reported score is deprecated. Pass step_output for "
+            "Conservative Dual-Verify scoring."
+        )
+    else:
+        return json.dumps({
+            "error": "Provide step_output (preferred) or score (legacy).",
+            "hint": (
+                "Submit the step artifact (test output, diff, summary) as "
+                "step_output. The server scores it via Conservative Dual-Verify."
+            ),
+        })
+
+    try:
+        verdict = controller.step(
+            session_id,
+            final_score,
+            note=note,
+            step_output=step_output,
+            step_tokens=step_tokens,
+        )
     except KeyError as exc:
         return json.dumps({"error": str(exc)})
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
+
+    verdict.update(cdv_meta)
     return json.dumps(verdict, indent=2, default=str)
 
 
@@ -2091,9 +2147,10 @@ def create_mcp_server() -> Any:
             "(elicit/refine/decompose), and suggestions. Follow its guidance.\n\n"
             "For multi-step / iterative tasks (where you plan → act → observe → "
             "repeat), drive the loop through loopllm_loop_start, then "
-            "loopllm_loop_step after each step (reporting a progress score), and "
-            "loopllm_loop_end when it stops. The step tool tells you when to stop "
-            "based on learned priors so you don't loop forever.\n\n"
+            "loopllm_loop_step after each step with step_output=<artifact> "
+            "(test log, diff, summary). The server runs Conservative Dual-Verify: "
+            "deterministic checks plus a separate critic call — do NOT self-grade. "
+            "Honor the continue/stop verdict, then call loopllm_loop_end.\n\n"
             "After presenting results to the user, call loopllm_feedback with "
             "the user's quality rating (1-5) to improve future predictions.\n\n"
             "Periodically call loopllm_prompt_stats to show the user their "
@@ -2373,13 +2430,10 @@ def create_mcp_server() -> Any:
     @mcp.tool(
         name="loopllm_loop_start",
         description=(
-            "Begin an ADAPTIVE AGENT LOOP for a multi-step task. Use this when "
-            "you are about to iterate (plan → act → observe → repeat) rather than "
-            "answer in one shot. Returns a learned step budget, a quality "
-            "threshold, and confidence — derived from Bayesian priors over past "
-            "loops of this task_type (no training data needed). Drive every "
-            "iterative task through loop_start → loop_step → loop_end so the "
-            "system learns how deep to loop and stops you from looping forever."
+            "Begin an ADAPTIVE AGENT LOOP for a multi-step task. Returns a learned "
+            "step budget, quality threshold, and a Conservative Dual-Verify recipe "
+            "(evaluator_type, quality_criteria). After each step submit step_output "
+            "to loopllm_loop_step — the server scores externally; do NOT self-grade."
         ),
     )
     def loop_start(
@@ -2388,22 +2442,49 @@ def create_mcp_server() -> Any:
         model_id: str | None = None,
         quality_threshold: float | None = None,
         cost_weight: float = 0.5,
+        evaluator_type: str = "composite",
+        quality_criteria: list[str] | None = None,
+        required_patterns: list[str] | None = None,
+        required_fields: list[str] | None = None,
+        max_wall_ms: float = 300_000.0,
+        max_tokens: int = 0,
     ) -> str:
-        return _tool_loop_start(goal, task_type, model_id, quality_threshold, cost_weight)
+        return _tool_loop_start(
+            goal,
+            task_type,
+            model_id,
+            quality_threshold,
+            cost_weight,
+            evaluator_type,
+            quality_criteria,
+            required_patterns,
+            required_fields,
+            max_wall_ms,
+            max_tokens,
+        )
 
     @mcp.tool(
         name="loopllm_loop_step",
         description=(
-            "Report the result of ONE agent-loop step and get a statistically-"
-            "grounded continue/stop verdict. Pass the session_id from "
-            "loopllm_loop_start and a progress score in [0,1] (how close the "
-            "latest step got you to the goal). Returns decision='continue' or "
-            "'stop' with a reason: it stops on goal reached, plateaued progress, "
-            "low expected ROI (Bayesian), or exhausted budget. Honor the verdict."
+            "Submit ONE agent-loop step artifact for Conservative Dual-Verify "
+            "scoring. Pass session_id and step_output (test log, diff, summary). "
+            "The server scores via deterministic evaluators (Channel A) and a "
+            "separate critic sampling call (Channel B); final = min(A,B). Returns "
+            "decision, channel_a_score, channel_b_score, deficiencies. Do NOT "
+            "pass your own score unless step_output is unavailable (legacy)."
         ),
     )
-    def loop_step(session_id: str, score: float, note: str = "") -> str:
-        return _tool_loop_step(session_id, score, note)
+    async def loop_step(
+        session_id: str,
+        step_output: str = "",
+        score: float | None = None,
+        note: str = "",
+        step_tokens: int = 0,
+        ctx: Context[Any, Any, Any] | None = None,
+    ) -> str:
+        return await _tool_loop_step(
+            session_id, step_output, score, note, step_tokens, ctx
+        )
 
     @mcp.tool(
         name="loopllm_loop_end",
