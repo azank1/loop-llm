@@ -21,7 +21,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `AgentLoopController` and `AgentLoopSession` exported from the package root.
 - Runnable example `examples/agent_loop.py` and walkthrough
   `docs/demo/agent_loop_demo.md`.
-- Tests: `tests/test_agent_loop.py`.
+- Reproducible benchmark `benchmarks/adaptive_vs_fixed.py` comparing adaptive
+  stopping against fixed/threshold strategies (adaptive: ~41% fewer steps than a
+  fixed 6-step budget at 99.7% goal-reach).
+- Tests: `tests/test_agent_loop.py`, `tests/test_benchmark.py`.
+- Repo hygiene: `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, GitHub issue/PR
+  templates, `[project.urls]` + classifiers in `pyproject.toml`, CI badge, and a
+  committed `.cursor/mcp.json` for Cursor auto-detection.
+
+### Changed
+- README deduplicated and corrected (28 tools, 204 tests, schema v4); added
+  "Adaptive agent loops" and "Benchmark" sections.
 
 ### Fixed
 - Version drift: `__init__.__version__` now matches `pyproject.toml`.

@@ -115,6 +115,19 @@ verdict = controller.step(session.session_id, score=0.9)   # -> {"decision": "st
 controller.end(session.session_id)                         # -> learns optimal depth
 ```
 
+What a run looks like (`python examples/agent_loop.py`):
+
+```text
+=== Loop (task_type=bugfix) ===
+Suggested budget: 3 step(s) | threshold 0.80 | confidence 0.00 (from 0 past loops)
+  step  1 | 0.45 |#########           | -> CONTINUE: step 1/3, score 0.450 below 0.80
+  step  2 | 0.85 |#################   | -> STOP: Goal reached: 0.850 >= 0.80 at step 2
+
+# after learning from 15+ converging bugfix loops:
+Suggested budget: 1 step(s) | threshold 0.88 | confidence 0.63 (from 17 past loops)
+  step  1 | ... | -> STOP: budget exhausted (1/1); escalate or accept
+```
+
 ### Benchmark: adaptive vs fixed `max_iterations`
 
 A reproducible simulation (`benchmarks/adaptive_vs_fixed.py`, seed=7, 300 test

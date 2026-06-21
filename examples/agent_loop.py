@@ -12,7 +12,14 @@ Run it::
 """
 from __future__ import annotations
 
+import logging
+
+import structlog
+
 from loopllm import AdaptivePriors, AgentLoopController, CallObservation
+
+# Keep the demo output clean — silence the library's info/debug logs.
+structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.WARNING))
 
 
 def simulate_loop(controller: AgentLoopController, scores: list[float], task_type: str) -> None:
