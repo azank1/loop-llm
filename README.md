@@ -115,6 +115,29 @@ verdict = controller.step(session.session_id, score=0.9)   # -> {"decision": "st
 controller.end(session.session_id)                         # -> learns optimal depth
 ```
 
+### Benchmark: adaptive vs fixed `max_iterations`
+
+A reproducible simulation (`benchmarks/adaptive_vs_fixed.py`, seed=7, 300 test
+tasks across 3 task types, threshold 0.80) comparing how a loop decides when to
+stop:
+
+| Strategy | Mean steps | Mean final score | % reaching 0.80 | Wasted steps | Efficiency (reach/step) |
+|---|---|---|---|---|---|
+| fixed (budget=2) | 2.00 | 0.698 | 34.3% | 0.00 | 17.2 |
+| fixed (budget=6) | 6.00 | 0.939 | 94.0% | 2.50 | 15.7 |
+| threshold (reactive) | 3.56 | 0.852 | 100.0% | 0.00 | 28.1 |
+| **adaptive (loopllm)** | **3.56** | **0.852** | **99.7%** | **0.00** | **28.0** |
+
+**Adaptive uses ~41% fewer steps than a fixed 6-step budget while reaching the bar
+on 99.7% of tasks** (vs 94% for the fixed budget, 34% for a small one). It recovers
+the efficiency of the reactive "stop at threshold" oracle — but predicts a budget
+up front and stops on low expected ROI, so it doesn't depend on cheaply evaluating
+every single step.
+
+> Honest caveat: this is a simulation with stated assumptions (diminishing-returns
+> curves + noise); it measures *decision efficiency given a quality signal*, not
+> absolute model quality. Reproduce with `python benchmarks/adaptive_vs_fixed.py`.
+
 ---
 
 ## Quickstart
@@ -311,7 +334,7 @@ print(result.output, result.best_score, result.converged)
 git clone https://github.com/azank1/loop-llm   # GitHub repo still named loop-llm
 cd loop-llm
 pip install -e ".[dev]"
-python -m pytest tests/ -q          # 201 tests (197 pass, 4 integration skipped), ~2s
+python -m pytest tests/ -q          # 204 tests (200 pass, 4 integration skipped), ~2s
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and branch naming
