@@ -9,9 +9,37 @@ description = "MCP server that observes every prompt, scores quality in real tim
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
+authors = [{ name = "azank1" }]
+keywords = [
+    "mcp",
+    "llm",
+    "agent",
+    "agent-loop",
+    "bayesian",
+    "prompt-engineering",
+    "thompson-sampling",
+    "cursor",
+    "vscode",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "structlog>=24.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/azank1/loop-llm"
+Repository = "https://github.com/azank1/loop-llm"
+Changelog = "https://github.com/azank1/loop-llm/blob/main/CHANGELOG.md"
+Issues = "https://github.com/azank1/loop-llm/issues"
 
 [project.optional-dependencies]
 openrouter = [
