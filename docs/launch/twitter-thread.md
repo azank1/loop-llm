@@ -13,7 +13,8 @@ I built a statistically-grounded stop button for agent loops — no training dat
 
 `pip install loopllm` · MIT · works in Cursor & VS Code 🧵
 
-[attach: demo GIF / screenshot]
+Attach `img/agent_loop.svg` (terminal cast) or record a 15–30s IDE clip per
+`docs/demo/agent_loop_demo.md`.
 
 ---
 

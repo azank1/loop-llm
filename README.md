@@ -115,6 +115,8 @@ verdict = controller.step(session.session_id, score=0.9)   # -> {"decision": "st
 controller.end(session.session_id)                         # -> learns optimal depth
 ```
 
+![Adaptive agent loop demo](img/agent_loop.svg)
+
 What a run looks like (`python examples/agent_loop.py`):
 
 ```text

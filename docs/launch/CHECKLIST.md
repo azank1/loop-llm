@@ -3,14 +3,15 @@
 Drafts live in this folder. Nothing posts automatically — you post.
 
 ## Pre-flight (do these first)
-- [ ] PR #1 merged to `main`; CI green on `main`.
+- [x] PR #1 merged to `main`; CI green on `main`.
 - [ ] Tag `v0.6.0` pushed.
 - [ ] (Optional) `loopllm 0.6.0` published to PyPI so `pip install loopllm` works.
-- [ ] Record a 15–30s IDE clip (Cursor/VS Code) of `loop_start → step → end`
+- [x] Terminal cast at `img/agent_loop.svg` embedded in README.
+- [ ] (Optional) Record a 15–30s IDE clip (Cursor/VS Code) of `loop_start → step → end`
       using `docs/demo/agent_loop_demo.md`; drop it in `img/` and link from the
       X thread. Existing screenshots in `img/` are good supporting stills.
-- [ ] Re-run `python benchmarks/adaptive_vs_fixed.py` and confirm the README
-      numbers still match.
+- [x] Re-run `python benchmarks/adaptive_vs_fixed.py` and confirm the README
+      numbers still match (verified locally).
 - [ ] Skim the README top-to-bottom on GitHub (no duplicate sections, badges
       resolve, links work).
 
@@ -25,7 +26,8 @@ Drafts live in this folder. Nothing posts automatically — you post.
 - Be online for the first 2–3 hours to answer comments.
 
 ## X / Twitter
-- Thread: `docs/launch/twitter-thread.md`. Lead tweet must have the visual.
+- Thread: `docs/launch/twitter-thread.md`. Lead tweet must have the visual
+  (`img/agent_loop.svg` or an IDE screen recording).
 
 ## Reddit
 - r/LocalLLaMA + r/MachineLearning drafts: `docs/launch/reddit.md`.

@@ -57,7 +57,7 @@ This runs: score → elicit (if quality < 0.6) → decompose (if complex) → ex
 
 ---
 
-## All 24 tools (`loopllm_*`)
+## All 28 tools (`loopllm_*`)
 
 **Core loop**
 
@@ -108,13 +108,23 @@ This runs: score → elicit (if quality < 0.6) → decompose (if complex) → ex
 | `loopllm_list_tasks` | List tasks from persistent store |
 | `loopllm_show_task` | Detail view for single task |
 
+**Adaptive agent loops**
+
+| Tool | Purpose |
+|---|---|
+| `loopllm_loop_start` | Begin iterative loop; returns learned budget + threshold |
+| `loopllm_loop_step` | Report progress score; returns continue/stop verdict |
+| `loopllm_loop_end` | End loop and record observation for future budgets |
+| `loopllm_loop_status` | Inspect active loop session state |
+
 ---
 
 ## Repo structure
 
 ```
 src/loopllm/
-  mcp_server.py    — all 24 tools + SGD weight learning + Thompson Sampling
+  mcp_server.py    — all 28 tools + SGD weight learning + Thompson Sampling
+  agent_loop.py    — AgentLoopController (start/step/end adaptive loops)
   store.py         — SQLite schema v4 (priors, history, plans, learned_weights)
   priors.py        — Beta-Binomial, NormalPrior (Welford's), AdaptivePriors
   adaptive_exit.py — Bayesian early stopping
@@ -126,8 +136,8 @@ vscode-loopllm/    — VS Code extension (TypeScript sidebar panels)
   src/dashboardProvider.ts  — prompt history chart + learning curve
   src/statusWatcher.ts      — polls status.json for real-time gauge updates
 
-tests/             — 186 tests: python -m pytest tests/ -q
-examples/          — basic_loop.py, bayesian_exit.py, elicitation_demo.py
+tests/             — 204 tests: python -m pytest tests/ -q
+examples/          — basic_loop.py, agent_loop.py, bayesian_exit.py, elicitation_demo.py
 ```
 
 **Key implementation reference:**
