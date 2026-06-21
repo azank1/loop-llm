@@ -173,6 +173,33 @@ verdict = controller.step(session.session_id, score=0.9)   # library API (pre-sc
 controller.end(session.session_id)
 ```
 
+### Use it in any framework — `AdaptiveStopper` (no MCP)
+
+For LangGraph / CrewAI / AutoGen or a hand-rolled loop, `AdaptiveStopper` turns the
+controller into one enforced `should_continue(state)` predicate. If `state` carries
+a verified `score` it's used; otherwise the artifact in `state["output"]` is scored
+locally with the deterministic Channel-A evaluator — so the router stops the loop,
+not the model's self-grade.
+
+```python
+from loopllm import AdaptiveStopper
+
+stop = AdaptiveStopper(
+    goal="make the failing tests pass", task_type="bugfix",
+    evaluator_type="regex", required_patterns=[r"0 failed"], max_tokens=20_000,
+)
+
+# LangGraph conditional edge:
+graph.add_conditional_edges("agent", lambda s: stop.route(s, "agent", "END"))
+
+# or any while-loop:
+while stop.should_continue(state):   # state = {"output": artifact, "tokens": n}
+    state = run_agent_step(state)
+```
+
+See [`examples/langgraph_stopper.py`](examples/langgraph_stopper.py) for a runnable
+graph-style demo (no LangGraph dependency required).
+
 ![Adaptive agent loop demo](img/agent_loop.svg)
 
 What a terminal run looks like (`python examples/agent_loop.py`):
@@ -288,6 +315,17 @@ Per-(task\_type, model) convergence priors drive adaptive exit in `adaptive_exit
 pip install loopllm[mcp]
 ```
 
+> **Ubuntu / Debian (PEP 668):** system Python is "externally managed", so a bare
+> `pip install` fails with `externally-managed-environment`. Use a venv (recommended)
+> or pipx:
+>
+> ```bash
+> python3 -m venv .venv && .venv/bin/pip install 'loopllm[mcp]'   # then .venv/bin/loopllm
+> # or:  pipx install 'loopllm[mcp]'
+> ```
+>
+> Point your MCP config's `command` at the venv binary (e.g. `/path/.venv/bin/loopllm`).
+
 Add `.vscode/mcp.json` to your project:
 
 ```json
@@ -370,7 +408,7 @@ print(result.output, result.best_score, result.converged)
 git clone https://github.com/azank1/loop-llm
 cd loop-llm
 pip install -e ".[dev]"
-python -m pytest tests/ -q          # 219 tests (215 pass, 4 skipped), ~2s
+python -m pytest tests/ -q          # 226 tests (215 pass, 4 skipped), ~2s
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for branch naming (`az/<type>/<short>`) and checks.

@@ -9,7 +9,7 @@ the branch/commit conventions, and the checks your change must pass.
 git clone https://github.com/azank1/loop-llm
 cd loop-llm
 pip install -e ".[dev]"
-python -m pytest tests/ -q          # 219 tests (215 pass, 4 integration skipped)
+python -m pytest tests/ -q          # 226 tests (222 pass, 4 integration skipped)
 ```
 
 ## Branch naming convention
@@ -51,6 +51,7 @@ python -m pytest tests/ -q
 | Core refinement loop | `src/loopllm/engine.py` |
 | Bayesian priors / learning | `src/loopllm/priors.py` |
 | Adaptive agent loops | `src/loopllm/agent_loop.py` |
+| Framework stop adapter (should_continue) | `src/loopllm/adapters.py` |
 | Conservative Dual-Verify scoring | `src/loopllm/step_scorer.py` |
 | Agent-loop guard stack | `src/loopllm/guards.py` |
 | Evaluator factory | `src/loopllm/evaluator_factory.py` |
