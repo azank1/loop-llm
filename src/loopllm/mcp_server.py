@@ -30,7 +30,6 @@ from loopllm.step_scorer import (
 )
 from loopllm.priors import CallObservation
 from loopllm.provider import LLMProvider
-from loopllm.dag_scheduler import DagScheduler
 from loopllm.episodes import EpisodicStore, artifact_ref_hash, summarize_artifacts
 from loopllm.plan_registry import get_registry
 from loopllm.providers.agent import AgentPassthroughProvider
@@ -53,7 +52,6 @@ _default_model: str = "gpt-4o-mini"
 _active_sessions: dict[str, dict[str, Any]] = {}
 _agent_loop: AgentLoopController | None = None
 _episodic: EpisodicStore | None = None
-_dag_scheduler: DagScheduler | None = None
 _status_path: Path | None = None
 _history_path: Path | None = None
 # Last per-dimension scores computed by _score_prompt_quality — used by SGD.
@@ -192,13 +190,6 @@ def _get_episodic() -> EpisodicStore:
         mirror = db_path.parent / "active_run.json"
         _episodic = EpisodicStore(_get_store(), mirror_path=mirror)
     return _episodic
-
-
-def _get_dag_scheduler() -> DagScheduler:
-    global _dag_scheduler  # noqa: PLW0603
-    if _dag_scheduler is None:
-        _dag_scheduler = DagScheduler(_get_episodic())
-    return _dag_scheduler
 
 
 def _build_evaluator(
@@ -513,13 +504,11 @@ def _tool_intercept(prompt: str) -> str:
         reason = ("Prompt is too vague — clarifying questions will "
                   "significantly improve output quality")
         next_tool = "loopllm_elicitation_start"
-    elif complexity > 0.5:
+    elif complexity > 0.6:
         route = "decompose"
-        reason = (
-            f"Complex task (complexity={complexity:.2f}) — use DAG virtual "
-            f"sub-agents (loopllm_dag_compile) with verified node boundaries"
-        )
-        next_tool = "loopllm_dag_compile"
+        reason = (f"Complex task (complexity={complexity:.2f}) — "
+                  "breaking into subtasks will produce better results")
+        next_tool = "loopllm_plan_tasks"
     elif q < 0.6:
         route = "elicit_then_refine"
         reason = ("Prompt has gaps — quick elicitation then refinement "
@@ -1574,7 +1563,7 @@ def _tool_recall(
 
 
 def _tool_run_status() -> str:
-    """Return active loop/plan/DAG snapshots for IDE reload recovery."""
+    """Return active loop/plan snapshots for IDE reload recovery."""
     snapshot = _get_episodic().run_status_snapshot()
     controller = _get_agent_loop()
     loops: list[dict[str, Any]] = []
@@ -1587,92 +1576,6 @@ def _tool_run_status() -> str:
                 loops.append(run)
     snapshot["active_agent_loops"] = loops
     return json.dumps(snapshot, indent=2, default=str)
-
-
-def _tool_dag_compile(
-    goal: str,
-    nodes: list[dict[str, Any]] | None = None,
-    task_type: str = "general",
-    model_id: str | None = None,
-) -> str:
-    """Compile a DAG of virtual sub-agent nodes."""
-    scheduler = _get_dag_scheduler()
-    mod = model_id or _get_model()
-    episodic = _get_episodic()
-    recall = episodic.recall(goal, task_type=task_type, k=3)
-
-    if not nodes:
-        return json.dumps({
-            "error": "Provide nodes array with id, role, description, dependencies.",
-            "hint": (
-                "Each node: {id, role, description, dependencies, "
-                "evaluator_type?, required_patterns?}"
-            ),
-            "similar_episodes": recall,
-        }, indent=2)
-
-    run = scheduler.compile(
-        goal,
-        nodes,
-        task_type=task_type,
-        model_id=mod,
-        recall_query=goal,
-    )
-    payload = scheduler.to_dict(run.run_id)
-    payload["similar_episodes"] = recall
-    payload["guidance"] = (
-        "Call loopllm_dag_ready, execute one frontier node, then "
-        "loopllm_dag_submit with step_output. Repeat until dag_complete, "
-        "then loopllm_dag_merge."
-    )
-    return json.dumps(payload, indent=2, default=str)
-
-
-def _tool_dag_ready(run_id: str) -> str:
-    """Return frontier DAG nodes ready for the IDE agent to execute."""
-    scheduler = _get_dag_scheduler()
-    try:
-        frontier = scheduler.ready(run_id)
-    except KeyError as exc:
-        return json.dumps({"error": str(exc)})
-    return json.dumps({"run_id": run_id, "frontier": frontier}, indent=2, default=str)
-
-
-async def _tool_dag_submit(
-    run_id: str,
-    node_id: str,
-    step_output: str,
-    ctx: Context[Any, Any, Any] | None = None,
-) -> str:
-    """Submit a node artifact with CDV when MCP sampling is available."""
-    scheduler = _get_dag_scheduler()
-    try:
-        result = await scheduler.submit_async(
-            run_id, node_id, step_output, ctx=ctx,
-        )
-    except (KeyError, ValueError) as exc:
-        return json.dumps({"error": str(exc)})
-    return json.dumps(result, indent=2, default=str)
-
-
-def _tool_dag_status(run_id: str) -> str:
-    """Full DAG graph state."""
-    scheduler = _get_dag_scheduler()
-    try:
-        status = scheduler.status(run_id)
-    except KeyError as exc:
-        return json.dumps({"error": str(exc)})
-    return json.dumps(status, indent=2, default=str)
-
-
-def _tool_dag_merge(run_id: str) -> str:
-    """Merge verified DAG node outputs."""
-    scheduler = _get_dag_scheduler()
-    try:
-        result = scheduler.merge(run_id)
-    except (KeyError, ValueError) as exc:
-        return json.dumps({"error": str(exc)})
-    return json.dumps(result, indent=2, default=str)
 
 
 def _tool_list_tasks(
@@ -2144,25 +2047,6 @@ async def _sampling_run_pipeline(
     quality = _score_prompt_quality(prompt)
     task_type = _classify_task_type(prompt)
     complexity = _estimate_complexity(prompt)
-
-    if complexity > 0.5:
-        recall = _get_episodic().recall(prompt, task_type=task_type, k=3)
-        return json.dumps({
-            "recommendation": "loopllm_dag_compile",
-            "reason": (
-                "Complex tasks should use DAG virtual sub-agents with per-node "
-                "CDV instead of inline pipeline decomposition."
-            ),
-            "complexity": round(complexity, 3),
-            "task_type": task_type,
-            "similar_episodes": recall,
-            "hint": (
-                "Decompose into nodes (id, role, description, dependencies) and "
-                "call loopllm_dag_compile, then dag_ready / dag_submit / dag_merge."
-            ),
-            "via": "mcp_sampling",
-        }, indent=2)
-
     num_samples = 0
 
     # Stage 1: elicit clarifying assumptions when prompt quality is weak
@@ -2737,71 +2621,12 @@ def create_mcp_server() -> Any:
     @mcp.tool(
         name="loopllm_run_status",
         description=(
-            "Return active agent-loop, plan, and DAG run snapshots for IDE "
+            "Return active agent-loop and plan snapshots for IDE "
             "reload recovery after a crash or MCP server restart."
         ),
     )
     def run_status() -> str:
         return _tool_run_status()
-
-    @mcp.tool(
-        name="loopllm_dag_compile",
-        description=(
-            "Compile a DAG of virtual sub-agent nodes for complex multi-step work. "
-            "Pass goal and nodes array (id, role, description, dependencies). "
-            "Injects similar_episodes from episodic memory. IDE agent executes "
-            "one frontier node at a time via dag_ready / dag_submit."
-        ),
-    )
-    def dag_compile(
-        goal: str,
-        nodes: list[dict[str, Any]] | None = None,
-        task_type: str = "general",
-        model_id: str | None = None,
-    ) -> str:
-        return _tool_dag_compile(goal, nodes, task_type, model_id)
-
-    @mcp.tool(
-        name="loopllm_dag_ready",
-        description=(
-            "Return frontier DAG nodes whose dependencies are verified, with "
-            "scoped worker prompts and inputs from completed nodes."
-        ),
-    )
-    def dag_ready(run_id: str) -> str:
-        return _tool_dag_ready(run_id)
-
-    @mcp.tool(
-        name="loopllm_dag_submit",
-        description=(
-            "Submit a DAG node step artifact for CDV scoring. Marks node "
-            "verified or failed; unlocks dependent nodes when accepted."
-        ),
-    )
-    async def dag_submit(
-        run_id: str,
-        node_id: str,
-        step_output: str,
-        ctx: Context[Any, Any, Any] | None = None,
-    ) -> str:
-        return await _tool_dag_submit(run_id, node_id, step_output, ctx)
-
-    @mcp.tool(
-        name="loopllm_dag_status",
-        description="Full DAG graph state: node states, scores, ready frontier.",
-    )
-    def dag_status(run_id: str) -> str:
-        return _tool_dag_status(run_id)
-
-    @mcp.tool(
-        name="loopllm_dag_merge",
-        description=(
-            "Merge verified DAG node outputs in topological order. "
-            "Call when all nodes are verified."
-        ),
-    )
-    def dag_merge(run_id: str) -> str:
-        return _tool_dag_merge(run_id)
 
     @mcp.tool(
         name="loopllm_list_tasks",

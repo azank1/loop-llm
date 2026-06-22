@@ -22,7 +22,6 @@ from loopllm.engine import (
     LoopMetrics,
     RefinementResult,
 )
-from loopllm.dag_scheduler import DagNode, DagRun, DagScheduler, NodeState
 from loopllm.episodes import EpisodicStore
 from loopllm.guards import AgentLoopGuard, GuardContext, GuardStack
 from loopllm.priors import AdaptivePriors, CallObservation
@@ -30,7 +29,7 @@ from loopllm.step_scorer import DualVerifyScore, conservative_dual_verify
 from loopllm.store import LoopStore, SQLiteBackedPriors
 from loopllm.tasks import Task, TaskOrchestrator, TaskPlan, TaskState
 
-__version__ = "0.9.0"
+__version__ = "0.8.0"
 
 __all__ = [
     # Engine
@@ -72,9 +71,4 @@ __all__ = [
     "TaskOrchestrator",
     # Episodic memory
     "EpisodicStore",
-    # DAG virtual sub-agents
-    "DagScheduler",
-    "DagRun",
-    "DagNode",
-    "NodeState",
 ]
