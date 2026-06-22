@@ -17,7 +17,8 @@ venv/
 .vscode/*
 !.vscode/mcp.json
 !.vscode/settings.json
-.cursor/rules/
+.cursor/*
+!.cursor/mcp.json
 *.swp
 *.swo
 
@@ -33,6 +34,10 @@ docs/_build/
 # OS
 .DS_Store
 Thumbs.db
+
+# Secrets / local env
+.env
+.env.*
 
 # Priors data
 priors.json
