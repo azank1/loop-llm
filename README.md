@@ -10,7 +10,7 @@
 **A Bayesian MCP sidecar for your IDE agent** — observe prompts, refine outputs, and
 stop agent loops using externally verified scores.
 
-> Current release: **v0.9.0**.
+> Current release: **v0.7.0**. In progress: **v0.8.0** episodic memory (`az/ft/episodic-memory`), then **v0.9.0** DAG virtual sub-agents (`az/ft/dag-virtual-agents`) — not released yet.
 
 ---
 
@@ -79,7 +79,7 @@ flowchart TB
 
 ## Quickstart
 
-Published on [PyPI](https://pypi.org/project/loopllm/) as `loopllm` v0.9.0. Two ways to use it: the **CLI** (try in seconds) and the **MCP server** (main use — plugs into Cursor / VS Code).
+Published on [PyPI](https://pypi.org/project/loopllm/) as `loopllm` v0.7.0 (latest release). Two ways to use it: the **CLI** (try in seconds) and the **MCP server** (main use — plugs into Cursor / VS Code).
 
 ### Install
 

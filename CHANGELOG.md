@@ -6,7 +6,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.9.0] — 2026-06-22
+## [0.9.0] — unreleased (branch: az/ft/dag-virtual-agents)
 
 ### Added
 - **DAG virtual sub-agents** (`src/loopllm/dag_scheduler.py`): compile dependency-ordered
@@ -15,7 +15,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Per-node CDV via `submit_async` when MCP sampling is available.
 - `complexity > 0.5` routes to DAG via `loopllm_intercept` and `loopllm_run_pipeline`.
 
-## [0.8.0] — 2026-06-22
+## [0.8.0] — unreleased (branch: az/ft/episodic-memory; prerequisite for v0.9)
 
 ### Added
 - **Episodic memory** (SQLite schema v5): `episodes` and `active_runs` tables in
