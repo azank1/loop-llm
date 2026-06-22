@@ -62,15 +62,67 @@ flowchart TB
 
 ## Quickstart
 
+Published on [PyPI](https://pypi.org/project/loopllm/0.7.0/) as `loopllm` v0.7.0. Two ways to use it: the **CLI** (try in seconds) and the **MCP server** (main use — plugs into Cursor / VS Code).
+
+### Install
+
 ```bash
-git clone https://github.com/azank1/loop-llm   # GitHub repo still named loop-llm
-cd loop-llm
-pip install -e ".[mcp]"
-code .    # or open in Cursor
+pipx install "loopllm[mcp]"          # cleanest — isolated, puts loopllm on PATH
 ```
 
-`.vscode/mcp.json` and `.cursor/mcp.json` are committed — the MCP server is picked
-up automatically. Verify on first load:
+On Ubuntu/Debian, bare `pip install loopllm` fails with `externally-managed-environment` (PEP 668). Use pipx (above), or a venv:
+
+```bash
+python3 -m venv ~/.venvs/loopllm
+~/.venvs/loopllm/bin/pip install "loopllm[mcp]"
+# CLI is then at ~/.venvs/loopllm/bin/loopllm
+```
+
+### Try it in 5 seconds — score a prompt (no MCP, no API key)
+
+```bash
+loopllm score "write me some code"
+loopllm score "add retry with backoff to download(); raise after 3 tries" --json
+```
+
+Fully offline. Writes gauge state to `~/.loopllm/status.json` (VS Code extension picks it up).
+
+### Main use — MCP server in Cursor / VS Code
+
+The server runs over stdio; your IDE's agent launches it. Point the IDE at `loopllm` on PATH — you don't run it by hand.
+
+**Cursor** — `.cursor/mcp.json` in your project (or `~/.cursor/mcp.json` globally):
+
+```json
+{
+  "mcpServers": {
+    "loopllm": {
+      "command": "loopllm",
+      "args": ["mcp-server", "--provider", "agent"]
+    }
+  }
+}
+```
+
+**VS Code** (Copilot agent mode) — `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "loopllm": {
+      "type": "stdio",
+      "command": "loopllm",
+      "args": ["mcp-server", "--provider", "agent"]
+    }
+  }
+}
+```
+
+Reload the IDE. In agent chat you'll have the `loopllm_*` tools — e.g. ask it to `loopllm_intercept` a prompt, or run a Conservative Dual-Verify loop with `loopllm_loop_start` / `loop_step` / `loop_end`.
+
+If you installed in a venv (not pipx), set `"command"` to the absolute venv path (e.g. `/home/you/.venvs/loopllm/bin/loopllm`) — the IDE won't see your venv's PATH. `--provider agent` uses your IDE's model via MCP sampling; no API key needed.
+
+Verify on first load:
 
 ```
 use loopllm_intercept with prompt: add retry logic to the download function
@@ -81,6 +133,26 @@ For iterative tasks, start a CDV loop:
 ```
 use loopllm_loop_start with goal="make the failing test pass" task_type="bugfix"
 ```
+
+### Optional — local models / REST scoring
+
+```bash
+pipx install "loopllm[serve]"
+loopllm serve --port 8765            # REST scoring endpoint for Ollama/llama.cpp loops
+loopllm mcp-server --provider ollama --model qwen2.5
+```
+
+---
+
+## Develop from source
+
+```bash
+git clone https://github.com/azank1/loop-llm   # GitHub repo still named loop-llm
+cd loop-llm
+pip install -e ".[dev]"
+```
+
+Committed [`.cursor/mcp.json`](.cursor/mcp.json) and [`.vscode/mcp.json`](.vscode/mcp.json) use `"command": "loopllm"` (expects pipx or PATH). For a repo-local venv, point `command` at `.venv/bin/loopllm`.
 
 ---
 
@@ -310,36 +382,9 @@ Per-(task\_type, model) convergence priors drive adaptive exit in `adaptive_exit
 
 ## Install as a package
 
-```bash
-pip install loopllm[mcp]
-```
+End-user install (pipx, venv, MCP config): see **Quickstart** above.
 
-> **Ubuntu / Debian (PEP 668):** system Python is "externally managed", so a bare
-> `pip install` fails with `externally-managed-environment`. Use a venv (recommended)
-> or pipx:
->
-> ```bash
-> python3 -m venv .venv && .venv/bin/pip install 'loopllm[mcp]'   # then .venv/bin/loopllm
-> # or:  pipx install 'loopllm[mcp]'
-> ```
->
-> Point your MCP config's `command` at the venv binary (e.g. `/path/.venv/bin/loopllm`).
-
-Add `.vscode/mcp.json` to your project:
-
-```json
-{
-  "servers": {
-    "loopllm": {
-      "type": "stdio",
-      "command": "loopllm",
-      "args": ["mcp-server", "--provider", "agent"]
-    }
-  }
-}
-```
-
-Cursor users: `.cursor/mcp.json` uses `"mcpServers"` as the top-level key.
+PyPI: [`loopllm`](https://pypi.org/project/loopllm/) · extras: `[mcp]` (IDE server), `[serve]` (REST scoring), `[ollama]`, `[openrouter]`
 
 ---
 
@@ -403,11 +448,10 @@ print(result.output, result.best_score, result.converged)
 
 ## Contributing
 
+See **Develop from source** above for clone and setup. Then:
+
 ```bash
-git clone https://github.com/azank1/loop-llm
-cd loop-llm
-pip install -e ".[dev]"
-python -m pytest tests/ -q          # 226 tests (215 pass, 4 skipped), ~2s
+python -m pytest tests/ -q          # 219 tests (215 pass, 4 skipped), ~2s
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for branch naming (`az/<type>/<short>`) and checks.
