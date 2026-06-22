@@ -48,6 +48,7 @@ class AgentLoopSession:
     started_at: float = field(default_factory=time.perf_counter)
     last_step_at: float = field(default_factory=time.perf_counter)
     last_decision: str = "continue"
+    last_reason: str = ""
     converged: bool | None = None
     closed: bool = False
     # CDV verifier recipe (configured at start)
@@ -169,6 +170,7 @@ class AgentLoopController:
 
         decision, reason = self._decide(session, score, steps_used, step_output)
         session.last_decision = decision
+        session.last_reason = reason
 
         verdict: dict[str, Any] = {
             "session_id": session.session_id,

@@ -10,7 +10,23 @@
 **A Bayesian MCP sidecar for your IDE agent** — observe prompts, refine outputs, and
 stop agent loops using externally verified scores.
 
-> The underlying CLI and tool API ship as `loopllm` (the original name). PromptLoop is the project brand. Current release: **v0.7.0**.
+> Current release: **v0.9.0**.
+
+---
+
+## Memory model
+
+PromptLoop uses two complementary memory layers in `~/.loopllm/store.db`:
+
+| Layer | What it learns | MCP tools |
+|---|---|---|
+| **Meta-memory** (v0.6+) | Optimal loop depth, convergence rate, scoring weights | `loopllm_loop_end`, `loopllm_feedback` |
+| **Episodic memory** (v0.8+) | Summaries of past loops/plans — keyword recall | `loopllm_recall`, `loopllm_run_status` |
+
+Episodic memory is **not** full chat RAG — it stores compressed outcomes so the next
+loop of the same task type can recall *what worked before*. For complex multi-step
+work, **DAG virtual sub-agents** (v0.9) split the goal into dependency-ordered nodes
+with per-node CDV — one IDE agent, partitioned context.
 
 ---
 
@@ -37,16 +53,16 @@ training data, no PyTorch.
 ```mermaid
 flowchart TB
   subgraph interfaces [Interfaces]
-    MCP[MCP 28 tools]
+    MCP[MCP 32 tools]
     Ext[VS Code extension]
   end
   subgraph layers [Three layers]
     L1[Layer 1: Prompt observer intercept + SGD]
     L2[Layer 2: Refinement loop LoopedLLM]
-    L3[Layer 3: CDV agent loops loop_start step end]
+    L3[Layer 3: CDV loops + DAG virtual sub-agents]
   end
   subgraph learn [Learning]
-    Priors[AdaptivePriors SQLite v4]
+    Priors[AdaptivePriors + Episodes SQLite v5]
   end
   interfaces --> layers
   layers --> Priors
@@ -57,12 +73,13 @@ flowchart TB
 | 1 — Observer | `loopllm_intercept` | Score, route, log; Thompson Sampling for questions |
 | 2 — Refinement | `loopllm_run_pipeline` | Elicit → decompose → execute → verify via MCP sampling |
 | 3 — CDV loops | `loopllm_loop_step(step_output=...)` | External dual-verify scoring → guards → Bayesian stop |
+| 3b — DAG split | `loopllm_dag_compile` → `dag_ready` / `dag_submit` | Virtual sub-agents with deps + per-node verify |
 
 ---
 
 ## Quickstart
 
-Published on [PyPI](https://pypi.org/project/loopllm/0.7.0/) as `loopllm` v0.7.0. Two ways to use it: the **CLI** (try in seconds) and the **MCP server** (main use — plugs into Cursor / VS Code).
+Published on [PyPI](https://pypi.org/project/loopllm/) as `loopllm` v0.9.0. Two ways to use it: the **CLI** (try in seconds) and the **MCP server** (main use — plugs into Cursor / VS Code).
 
 ### Install
 
@@ -388,7 +405,7 @@ PyPI: [`loopllm`](https://pypi.org/project/loopllm/) · extras: `[mcp]` (IDE ser
 
 ---
 
-## Tools (28)
+## Tools (32)
 
 | Tool | What it does |
 |---|---|
@@ -413,13 +430,20 @@ PyPI: [`loopllm`](https://pypi.org/project/loopllm/) · extras: `[mcp]` (IDE ser
 | `loopllm_loop_step` | Submit step artifact for CDV; returns continue/stop + channel scores |
 | `loopllm_loop_end` | Close loop and learn optimal depth from verified trajectories |
 | `loopllm_loop_status` | Inspect an active agent-loop session |
+| `loopllm_recall` | Keyword recall of similar past episodes |
+| `loopllm_run_status` | Active loop/plan/DAG snapshots for crash recovery |
+| `loopllm_dag_compile` | **Layer 3b.** Compile DAG virtual sub-agent nodes |
+| `loopllm_dag_ready` | Frontier nodes with scoped worker prompts |
+| `loopllm_dag_submit` | Per-node CDV verify; unlock dependents |
+| `loopllm_dag_status` | Full DAG graph state |
+| `loopllm_dag_merge` | Merge verified node outputs |
 | `loopllm_classify_task` | Label a prompt's task type |
 | `loopllm_analyze_prompt` | Generate clarifying questions ranked by Thompson-sampled gain |
 | `loopllm_list_tasks` | List tasks from the persistent store |
 | `loopllm_show_task` | Detail view for a single task |
 | `loopllm_report` | Learned weights, Bayesian priors, question effectiveness stats |
 
-Plans and learned weights persist to `~/.loopllm/store.db` (schema v4).
+Plans, episodes, and learned weights persist to `~/.loopllm/store.db` (schema v5).
 
 ---
 
@@ -451,19 +475,21 @@ print(result.output, result.best_score, result.converged)
 See **Develop from source** above for clone and setup. Then:
 
 ```bash
-python -m pytest tests/ -q          # 219 tests (215 pass, 4 skipped), ~2s
+python -m pytest tests/ -q          # 235 tests (231 pass, 4 skipped), ~2s
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for branch naming (`az/<type>/<short>`) and checks.
 
 **Key files:**
-- `src/loopllm/mcp_server.py` — 28 MCP tools + MCP Sampling helpers
+- `src/loopllm/mcp_server.py` — 32 MCP tools + MCP Sampling helpers
+- `src/loopllm/episodes.py` — episodic memory record/recall
+- `src/loopllm/dag_scheduler.py` — DAG virtual sub-agent scheduler
 - `src/loopllm/step_scorer.py` — Conservative Dual-Verify scoring
 - `src/loopllm/guards.py` — composable agent-loop stop stack
 - `src/loopllm/agent_loop.py` — adaptive agent-loop controller
 - `src/loopllm/evaluator_factory.py` — build evaluators for CDV Channel A
 - `src/loopllm/priors.py` — Beta/Normal priors, Welford, Thompson Sampling
-- `src/loopllm/store.py` — SQLite persistence (schema v4)
+- `src/loopllm/store.py` — SQLite persistence (schema v5)
 - `src/loopllm/engine.py` — core refinement loop (`LoopedLLM`)
 
 PRs welcome. Add tests for new tools in `tests/`.

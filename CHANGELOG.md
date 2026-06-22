@@ -6,15 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-06-22
+
 ### Added
-- **`AdaptiveStopper` framework adapter** (`src/loopllm/adapters.py`): turns the
-  agent-loop controller into one enforced `should_continue(state) -> bool` /
-  `route(state, on_continue, on_stop)` predicate for LangGraph conditional edges,
-  CrewAI/AutoGen callbacks, or plain `while` loops. Uses a supplied verified score
-  or scores `state["output"]` locally via the deterministic Channel-A evaluator —
-  stopping is enforced by the router, not the model's self-grade.
-- Runnable `examples/langgraph_stopper.py` (no LangGraph dependency required) and
-  `tests/test_adapters.py`. Exported `AdaptiveStopper` from the package root.
+- **DAG virtual sub-agents** (`src/loopllm/dag_scheduler.py`): compile dependency-ordered
+  nodes with scoped worker prompts; IDE agent executes one frontier at a time via
+  `loopllm_dag_compile` / `dag_ready` / `dag_submit` / `dag_merge` (32 MCP tools).
+- Per-node CDV via `submit_async` when MCP sampling is available.
+- `complexity > 0.5` routes to DAG via `loopllm_intercept` and `loopllm_run_pipeline`.
+
+## [0.8.0] — 2026-06-22
+
+### Added
+- **Episodic memory** (SQLite schema v5): `episodes` and `active_runs` tables in
+  [`store.py`](src/loopllm/store.py).
+- [`EpisodicStore`](src/loopllm/episodes.py): record completed loops/plans, keyword
+  recall, crash-safe active run snapshots (`~/.loopllm/active_run.json` mirror).
+- MCP tools: `loopllm_recall`, `loopllm_run_status`.
+- Hooks: `loopllm_loop_end`, `loopllm_plan_register` / `plan_update` record episodes
+  and persist active runs.
+- Example: [`examples/dag_virtual_agents.py`](examples/dag_virtual_agents.py).
+- Tests: `tests/test_episodes.py`, `tests/test_dag_scheduler.py`.
 
 ## [0.7.0] — 2026-06-22
 

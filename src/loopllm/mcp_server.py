@@ -30,6 +30,8 @@ from loopllm.step_scorer import (
 )
 from loopllm.priors import CallObservation
 from loopllm.provider import LLMProvider
+from loopllm.dag_scheduler import DagScheduler
+from loopllm.episodes import EpisodicStore, artifact_ref_hash, summarize_artifacts
 from loopllm.plan_registry import get_registry
 from loopllm.providers.agent import AgentPassthroughProvider
 from loopllm.store import LoopStore, SQLiteBackedPriors
@@ -50,6 +52,8 @@ _provider: LLMProvider | None = None
 _default_model: str = "gpt-4o-mini"
 _active_sessions: dict[str, dict[str, Any]] = {}
 _agent_loop: AgentLoopController | None = None
+_episodic: EpisodicStore | None = None
+_dag_scheduler: DagScheduler | None = None
 _status_path: Path | None = None
 _history_path: Path | None = None
 # Last per-dimension scores computed by _score_prompt_quality — used by SGD.
@@ -179,6 +183,22 @@ def _get_agent_loop() -> AgentLoopController:
     if _agent_loop is None:
         _agent_loop = AgentLoopController(_get_priors())
     return _agent_loop
+
+
+def _get_episodic() -> EpisodicStore:
+    global _episodic  # noqa: PLW0603
+    if _episodic is None:
+        db_path = Path(os.environ.get("LOOPLLM_DB", str(Path.home() / ".loopllm" / "store.db")))
+        mirror = db_path.parent / "active_run.json"
+        _episodic = EpisodicStore(_get_store(), mirror_path=mirror)
+    return _episodic
+
+
+def _get_dag_scheduler() -> DagScheduler:
+    global _dag_scheduler  # noqa: PLW0603
+    if _dag_scheduler is None:
+        _dag_scheduler = DagScheduler(_get_episodic())
+    return _dag_scheduler
 
 
 def _build_evaluator(
@@ -493,11 +513,13 @@ def _tool_intercept(prompt: str) -> str:
         reason = ("Prompt is too vague — clarifying questions will "
                   "significantly improve output quality")
         next_tool = "loopllm_elicitation_start"
-    elif complexity > 0.6:
+    elif complexity > 0.5:
         route = "decompose"
-        reason = (f"Complex task (complexity={complexity:.2f}) — "
-                  "breaking into subtasks will produce better results")
-        next_tool = "loopllm_plan_tasks"
+        reason = (
+            f"Complex task (complexity={complexity:.2f}) — use DAG virtual "
+            f"sub-agents (loopllm_dag_compile) with verified node boundaries"
+        )
+        next_tool = "loopllm_dag_compile"
     elif q < 0.6:
         route = "elicit_then_refine"
         reason = ("Prompt has gaps — quick elicitation then refinement "
@@ -1389,6 +1411,19 @@ def _tool_loop_start(
         max_tokens=max_tokens,
         **eval_kwargs,
     )
+    episodic = _get_episodic()
+    episodic.upsert_active_run(
+        session.session_id,
+        "agent_loop",
+        {
+            "session_id": session.session_id,
+            "goal": session.goal,
+            "task_type": session.task_type,
+            "model_id": session.model_id,
+            "suggested_budget": session.suggested_budget,
+            "quality_threshold": session.quality_threshold,
+        },
+    )
     return json.dumps(
         {
             "session_id": session.session_id,
@@ -1489,9 +1524,32 @@ def _tool_loop_end(session_id: str, converged: bool | None = None) -> str:
     """Finalise an agent loop and learn from it for future budget predictions."""
     controller = _get_agent_loop()
     try:
+        session = controller.get_session(session_id)
         summary = controller.end(session_id, converged)
     except KeyError as exc:
         return json.dumps({"error": str(exc)})
+
+    episodic = _get_episodic()
+    stop_reason = session.last_reason if session.last_decision == "stop" else "closed"
+    episodic.record_episode(
+        episode_type="agent_loop",
+        goal=session.goal,
+        task_type=session.task_type,
+        model_id=session.model_id,
+        summary=summarize_artifacts(
+            session.goal,
+            step_outputs=session.step_outputs,
+            stop_reason=stop_reason,
+            score_final=summary.get("final_score"),
+        ),
+        artifact_ref=artifact_ref_hash(
+            session.step_outputs[-1] if session.step_outputs else ""
+        ),
+        score_final=summary.get("final_score"),
+        steps_used=summary.get("steps_run"),
+        stop_reason=stop_reason,
+    )
+    episodic.clear_active_run(session_id)
     return json.dumps(summary, indent=2, default=str)
 
 
@@ -1503,6 +1561,118 @@ def _tool_loop_status(session_id: str) -> str:
     except KeyError as exc:
         return json.dumps({"error": str(exc)})
     return json.dumps(status, indent=2, default=str)
+
+
+def _tool_recall(
+    query: str,
+    task_type: str | None = None,
+    k: int = 5,
+) -> str:
+    """Recall similar past episodes by keyword search."""
+    episodes = _get_episodic().recall(query, task_type=task_type, k=k)
+    return json.dumps({"query": query, "count": len(episodes), "episodes": episodes}, indent=2)
+
+
+def _tool_run_status() -> str:
+    """Return active loop/plan/DAG snapshots for IDE reload recovery."""
+    snapshot = _get_episodic().run_status_snapshot()
+    controller = _get_agent_loop()
+    loops: list[dict[str, Any]] = []
+    for run in snapshot.get("active_runs", []):
+        if run.get("run_type") == "agent_loop":
+            sid = run.get("run_id", "")
+            try:
+                loops.append(controller.status(sid))
+            except KeyError:
+                loops.append(run)
+    snapshot["active_agent_loops"] = loops
+    return json.dumps(snapshot, indent=2, default=str)
+
+
+def _tool_dag_compile(
+    goal: str,
+    nodes: list[dict[str, Any]] | None = None,
+    task_type: str = "general",
+    model_id: str | None = None,
+) -> str:
+    """Compile a DAG of virtual sub-agent nodes."""
+    scheduler = _get_dag_scheduler()
+    mod = model_id or _get_model()
+    episodic = _get_episodic()
+    recall = episodic.recall(goal, task_type=task_type, k=3)
+
+    if not nodes:
+        return json.dumps({
+            "error": "Provide nodes array with id, role, description, dependencies.",
+            "hint": (
+                "Each node: {id, role, description, dependencies, "
+                "evaluator_type?, required_patterns?}"
+            ),
+            "similar_episodes": recall,
+        }, indent=2)
+
+    run = scheduler.compile(
+        goal,
+        nodes,
+        task_type=task_type,
+        model_id=mod,
+        recall_query=goal,
+    )
+    payload = scheduler.to_dict(run.run_id)
+    payload["similar_episodes"] = recall
+    payload["guidance"] = (
+        "Call loopllm_dag_ready, execute one frontier node, then "
+        "loopllm_dag_submit with step_output. Repeat until dag_complete, "
+        "then loopllm_dag_merge."
+    )
+    return json.dumps(payload, indent=2, default=str)
+
+
+def _tool_dag_ready(run_id: str) -> str:
+    """Return frontier DAG nodes ready for the IDE agent to execute."""
+    scheduler = _get_dag_scheduler()
+    try:
+        frontier = scheduler.ready(run_id)
+    except KeyError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps({"run_id": run_id, "frontier": frontier}, indent=2, default=str)
+
+
+async def _tool_dag_submit(
+    run_id: str,
+    node_id: str,
+    step_output: str,
+    ctx: Context[Any, Any, Any] | None = None,
+) -> str:
+    """Submit a node artifact with CDV when MCP sampling is available."""
+    scheduler = _get_dag_scheduler()
+    try:
+        result = await scheduler.submit_async(
+            run_id, node_id, step_output, ctx=ctx,
+        )
+    except (KeyError, ValueError) as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps(result, indent=2, default=str)
+
+
+def _tool_dag_status(run_id: str) -> str:
+    """Full DAG graph state."""
+    scheduler = _get_dag_scheduler()
+    try:
+        status = scheduler.status(run_id)
+    except KeyError as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps(status, indent=2, default=str)
+
+
+def _tool_dag_merge(run_id: str) -> str:
+    """Merge verified DAG node outputs."""
+    scheduler = _get_dag_scheduler()
+    try:
+        result = scheduler.merge(run_id)
+    except (KeyError, ValueError) as exc:
+        return json.dumps({"error": str(exc)})
+    return json.dumps(result, indent=2, default=str)
 
 
 def _tool_list_tasks(
@@ -1560,6 +1730,11 @@ def _tool_plan_register(
     # Persist immediately so plans survive MCP server restarts
     store = _get_store()
     store.save_plan(plan.to_dict())
+    _get_episodic().upsert_active_run(
+        plan.plan_id,
+        "plan",
+        plan.to_dict(),
+    )
     return json.dumps(plan.to_dict(), indent=2)
 
 
@@ -1615,6 +1790,23 @@ def _tool_plan_update(
     plan = registry.get(plan_id)
     if plan:
         store.save_plan(plan.to_dict())
+        _get_episodic().upsert_active_run(plan_id, "plan", plan.to_dict())
+        if mark_done and output_score is not None:
+            task = next((t for t in plan.tasks if t.id == task_id), None)
+            if task is not None:
+                _get_episodic().record_episode(
+                    episode_type="plan_node",
+                    goal=f"{plan.goal} [{task.title}]",
+                    task_type="general",
+                    model_id=_get_model(),
+                    summary=summarize_artifacts(
+                        plan.goal,
+                        output=task.description[:200],
+                        score_final=output_score,
+                    ),
+                    score_final=output_score,
+                    stop_reason="plan_task_done",
+                )
 
     return json.dumps(result, indent=2)
 
@@ -1952,6 +2144,25 @@ async def _sampling_run_pipeline(
     quality = _score_prompt_quality(prompt)
     task_type = _classify_task_type(prompt)
     complexity = _estimate_complexity(prompt)
+
+    if complexity > 0.5:
+        recall = _get_episodic().recall(prompt, task_type=task_type, k=3)
+        return json.dumps({
+            "recommendation": "loopllm_dag_compile",
+            "reason": (
+                "Complex tasks should use DAG virtual sub-agents with per-node "
+                "CDV instead of inline pipeline decomposition."
+            ),
+            "complexity": round(complexity, 3),
+            "task_type": task_type,
+            "similar_episodes": recall,
+            "hint": (
+                "Decompose into nodes (id, role, description, dependencies) and "
+                "call loopllm_dag_compile, then dag_ready / dag_submit / dag_merge."
+            ),
+            "via": "mcp_sampling",
+        }, indent=2)
+
     num_samples = 0
 
     # Stage 1: elicit clarifying assumptions when prompt quality is weak
@@ -2508,6 +2719,89 @@ def create_mcp_server() -> Any:
     )
     def loop_status(session_id: str) -> str:
         return _tool_loop_status(session_id)
+
+    @mcp.tool(
+        name="loopllm_recall",
+        description=(
+            "Recall similar past episodes (completed loops/plans) by keyword "
+            "search over goal, summary, and tags in ~/.loopllm/store.db."
+        ),
+    )
+    def recall(
+        query: str,
+        task_type: str | None = None,
+        k: int = 5,
+    ) -> str:
+        return _tool_recall(query, task_type, k)
+
+    @mcp.tool(
+        name="loopllm_run_status",
+        description=(
+            "Return active agent-loop, plan, and DAG run snapshots for IDE "
+            "reload recovery after a crash or MCP server restart."
+        ),
+    )
+    def run_status() -> str:
+        return _tool_run_status()
+
+    @mcp.tool(
+        name="loopllm_dag_compile",
+        description=(
+            "Compile a DAG of virtual sub-agent nodes for complex multi-step work. "
+            "Pass goal and nodes array (id, role, description, dependencies). "
+            "Injects similar_episodes from episodic memory. IDE agent executes "
+            "one frontier node at a time via dag_ready / dag_submit."
+        ),
+    )
+    def dag_compile(
+        goal: str,
+        nodes: list[dict[str, Any]] | None = None,
+        task_type: str = "general",
+        model_id: str | None = None,
+    ) -> str:
+        return _tool_dag_compile(goal, nodes, task_type, model_id)
+
+    @mcp.tool(
+        name="loopllm_dag_ready",
+        description=(
+            "Return frontier DAG nodes whose dependencies are verified, with "
+            "scoped worker prompts and inputs from completed nodes."
+        ),
+    )
+    def dag_ready(run_id: str) -> str:
+        return _tool_dag_ready(run_id)
+
+    @mcp.tool(
+        name="loopllm_dag_submit",
+        description=(
+            "Submit a DAG node step artifact for CDV scoring. Marks node "
+            "verified or failed; unlocks dependent nodes when accepted."
+        ),
+    )
+    async def dag_submit(
+        run_id: str,
+        node_id: str,
+        step_output: str,
+        ctx: Context[Any, Any, Any] | None = None,
+    ) -> str:
+        return await _tool_dag_submit(run_id, node_id, step_output, ctx)
+
+    @mcp.tool(
+        name="loopllm_dag_status",
+        description="Full DAG graph state: node states, scores, ready frontier.",
+    )
+    def dag_status(run_id: str) -> str:
+        return _tool_dag_status(run_id)
+
+    @mcp.tool(
+        name="loopllm_dag_merge",
+        description=(
+            "Merge verified DAG node outputs in topological order. "
+            "Call when all nodes are verified."
+        ),
+    )
+    def dag_merge(run_id: str) -> str:
+        return _tool_dag_merge(run_id)
 
     @mcp.tool(
         name="loopllm_list_tasks",
