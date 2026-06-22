@@ -22,8 +22,8 @@ venv/
 *.swp
 *.swo
 
-# Generated docs build output (hand-written docs/ are tracked)
-docs/_build/
+# Local docs (not published)
+docs/
 
 # mypy
 .mypy_cache/
