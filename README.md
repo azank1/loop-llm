@@ -161,8 +161,7 @@ loopllm_loop_end(session_id)   → learns optimal depth from verified trajectori
 `loopllm_loop_step` returns `stop` when any guard fires: goal reached (verified score),
 plateau, low Bayesian ROI, budget exhausted, timeout, token cap, or repeated output.
 
-See [`examples/agent_loop.py`](examples/agent_loop.py) for the library demo and
-[`docs/demo/agent_loop_demo.md`](docs/demo/agent_loop_demo.md) for CDV via MCP.
+See [`examples/agent_loop.py`](examples/agent_loop.py) for the library demo and CDV via MCP.
 
 ```python
 from loopllm import AdaptivePriors, AgentLoopController
