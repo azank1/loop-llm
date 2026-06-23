@@ -131,6 +131,81 @@ def test_recall_and_resume_unknown(mcp_env) -> None:
     assert json.loads(env._tool_recall("anything"))["count"] == 0
 
 
+def test_tool_loop_step_cdv_path(mcp_env) -> None:
+    """End-to-end: loop_start → loop_step (channel_a_only) → checkpoint → step again → stop."""
+    import asyncio
+
+    env = mcp_env
+
+    # Start with a low quality_threshold so a passing CDV score triggers stop.
+    start = json.loads(env._tool_loop_start(
+        "add retry logic to download()",
+        task_type="bugfix",
+        evaluator_type="composite",
+        quality_criteria=["retry logic", "raise"],
+        required_patterns=["retry"],
+        quality_threshold=0.6,
+    ))
+    sid = start["session_id"]
+    assert start["suggested_budget"] >= 1
+    assert start["similar_episodes"] == []  # cold start
+
+    # Step 1 — artifact missing 'retry', should continue.
+    step1 = json.loads(asyncio.run(env._tool_loop_step(
+        session_id=sid,
+        step_output="def download(url): return requests.get(url).text",
+        ctx=None,
+    )))
+    assert step1["decision"] == "continue"
+    assert step1["cdv_mode"] == "channel_a_only"
+    assert "channel_a_score" in step1
+    assert step1["channel_a_score"] < 0.8
+    # passed must be consistent with the verdict (score < threshold → not passed)
+    assert step1["passed"] is False
+    # Active run should be checkpointed.
+    runs = env._get_episodic().list_active_runs(run_type="agent_loop")
+    assert any(r["run_id"] == sid for r in runs), "step 1 not checkpointed"
+    snap = next(r for r in runs if r["run_id"] == sid)
+    assert snap["state"]["scores"] == pytest.approx([step1["score"]], abs=1e-3)
+
+    # Step 2 — artifact explicitly contains 'retry logic' and 'raise', should stop.
+    step2 = json.loads(asyncio.run(env._tool_loop_step(
+        session_id=sid,
+        step_output=(
+            "# retry logic: exponential backoff\n"
+            "def download(url, max_retry=3):\n"
+            "    for attempt in range(max_retry):\n"
+            "        try:\n"
+            "            return requests.get(url).text\n"
+            "        except Exception:\n"
+            "            time.sleep(2 ** attempt)\n"
+            "    raise RuntimeError('download failed after retry')"
+        ),
+        ctx=None,
+    )))
+    assert step2["decision"] == "stop", f"expected stop, got {step2.get('reason')}"
+    assert step2["cdv_mode"] == "channel_a_only"
+    assert step2["channel_a_score"] >= 0.6
+    assert step2["score"] >= 0.6
+
+    # loop_end should record an episode.
+    end = json.loads(env._tool_loop_end(sid))
+    assert end["converged"] is True  # score >= quality_threshold (0.6)
+    assert end["steps_run"] == 2
+
+    # Episode now exists in episodic store.
+    episodes = env._get_episodic().recall("retry download", task_type="bugfix")
+    assert episodes, "episode not recorded after loop_end"
+    assert "retry" in episodes[0]["goal"].lower() or "download" in episodes[0]["goal"].lower()
+
+    # similar_episodes injected on next loop_start.
+    start2 = json.loads(env._tool_loop_start(
+        "add retry logic to upload()", task_type="bugfix"
+    ))
+    assert start2["similar_episodes"], "similar_episodes not injected"
+    assert start2["similar_episodes"][0].get("task_type") == "bugfix"  # Bug 4 fix
+
+
 def test_server_registers_expected_tool_count(mcp_env) -> None:
     """31 MCP tools are registered (keeps the README banner honest)."""
     import asyncio

@@ -58,6 +58,7 @@ _agent_loop: AgentLoopController | None = None
 _episodic: EpisodicStore | None = None
 _status_path: Path | None = None
 _history_path: Path | None = None
+_episodes_feed_path: Path | None = None
 # Last per-dimension scores computed by _score_prompt_quality — used by SGD.
 _last_prompt_dims: dict[str, float] = {}
 
@@ -76,9 +77,36 @@ def _init_state() -> None:
     _default_model = os.environ.get("LOOPLLM_MODEL", "gpt-4o-mini")
     _status_path = db_path.parent / "status.json"
     _history_path = db_path.parent / "prompt_history.json"
+    _episodes_feed_path = db_path.parent / "episodes_feed.json"
 
     provider_name = os.environ.get("LOOPLLM_PROVIDER", "agent")
     _provider = _make_provider(provider_name)
+
+
+def _write_episodes_feed(entry: dict[str, Any]) -> None:
+    """Append one completed episode to episodes_feed.json (last 20 kept).
+
+    The extension reads this file to display the Loop Monitor without
+    needing a SQLite driver in the Node process.
+    """
+    _init_state()
+    if _episodes_feed_path is None:
+        return
+    try:
+        existing: list[dict[str, Any]] = []
+        if _episodes_feed_path.exists():
+            try:
+                existing = json.loads(_episodes_feed_path.read_text(encoding="utf-8"))
+                if not isinstance(existing, list):
+                    existing = []
+            except (json.JSONDecodeError, OSError):
+                existing = []
+        existing.append(entry)
+        # Keep the most recent 20 episodes
+        trimmed = existing[-20:]
+        _episodes_feed_path.write_text(json.dumps(trimmed, indent=2, default=str), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _make_provider(name: str) -> LLMProvider:
@@ -1427,6 +1455,7 @@ def _tool_loop_start(
     similar_brief = [
         {
             "goal": ep.get("goal", ""),
+            "task_type": ep.get("task_type", ""),
             "summary": ep.get("summary", ""),
             "stop_reason": ep.get("stop_reason"),
             "score_final": ep.get("score_final"),
@@ -1493,6 +1522,7 @@ async def _tool_loop_step(
                 quality_criteria=session.quality_criteria,
                 evaluator=evaluator,
                 ctx=ctx,
+                quality_threshold=session.quality_threshold,
             )
         except Exception as exc:  # noqa: BLE001
             return json.dumps({
@@ -1502,7 +1532,7 @@ async def _tool_loop_step(
         final_score = dual.final_score
         cdv_meta = dual.to_dict()
     elif score is not None:
-        dual = legacy_self_report_score(score)
+        dual = legacy_self_report_score(score, quality_threshold=session.quality_threshold)
         final_score = dual.final_score
         cdv_meta = dual.to_dict()
         cdv_meta["deprecation"] = (
@@ -1549,7 +1579,7 @@ async def _tool_loop_step(
                 session_id, "agent_loop", controller.get_session(session_id).to_snapshot()
             )
         except Exception:  # noqa: BLE001 — checkpointing must never break a step
-            pass
+            logger.warning("step_checkpoint_failed", session_id=session_id, exc_info=True)
 
     return json.dumps(verdict, indent=2, default=str)
 
@@ -1584,6 +1614,16 @@ def _tool_loop_end(session_id: str, converged: bool | None = None) -> str:
         stop_reason=stop_reason,
     )
     episodic.clear_active_run(session_id)
+    _write_episodes_feed({
+        "episode_type": "agent_loop",
+        "goal": session.goal,
+        "task_type": session.task_type,
+        "model_id": session.model_id,
+        "score_final": summary.get("final_score"),
+        "steps_used": summary.get("steps_run"),
+        "stop_reason": stop_reason,
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    })
     return json.dumps(summary, indent=2, default=str)
 
 
@@ -2379,7 +2419,7 @@ def create_mcp_server() -> Any:
     try:
         get_registry().restore_from_store(_get_store())
     except Exception:  # noqa: BLE001
-        pass  # non-fatal: store may not exist yet
+        logger.warning("plan_restore_failed", exc_info=True)  # non-fatal
 
     # Rehydrate in-progress agent loops so they survive an MCP/IDE restart.
     try:
@@ -2389,7 +2429,7 @@ def create_mcp_server() -> Any:
         if restored:
             logger.info("agent_loops_hydrated", count=restored)
     except Exception:  # noqa: BLE001
-        pass  # non-fatal: store may not exist yet
+        logger.warning("agent_loop_hydration_failed", exc_info=True)  # non-fatal
 
     # -- Routing & Prompt Engineering tools --
 
