@@ -56,7 +56,7 @@ python -m pytest tests/ -q
 | Agent-loop guard stack | `src/loopllm/guards.py` |
 | Evaluator factory | `src/loopllm/evaluator_factory.py` |
 | Bayesian early stopping | `src/loopllm/adaptive_exit.py` |
-| MCP tools (30) | `src/loopllm/mcp_server.py` |
+| MCP tools (31) | `src/loopllm/mcp_server.py` |
 | Episodic memory | `src/loopllm/episodes.py` |
 | SQLite persistence (schema v5) | `src/loopllm/store.py` |
 | CLI | `src/loopllm/cli.py` |

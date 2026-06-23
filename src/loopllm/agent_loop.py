@@ -62,6 +62,29 @@ class AgentLoopSession:
     prompt_tokens: int = 0
     completion_tokens: int = 0
 
+    # Fields persisted to active_runs for crash/restart recovery. Wall-clock
+    # timers (started_at/last_step_at) are intentionally excluded — they reset
+    # on restore, so the wall-clock guard budget restarts after a resume.
+    _SNAPSHOT_FIELDS = (
+        "session_id", "goal", "task_type", "model_id", "quality_threshold",
+        "suggested_budget", "cost_weight", "confidence", "total_observations",
+        "scores", "latencies_ms", "notes", "last_decision", "last_reason",
+        "converged", "closed", "evaluator_type", "evaluator_kwargs",
+        "quality_criteria", "max_wall_ms", "max_tokens", "step_outputs",
+        "step_fingerprints", "prompt_tokens", "completion_tokens",
+    )
+
+    def to_snapshot(self) -> dict[str, Any]:
+        """Serialise this session for the ``active_runs`` recovery store."""
+        return {name: getattr(self, name) for name in self._SNAPSHOT_FIELDS}
+
+    @classmethod
+    def from_snapshot(cls, state: dict[str, Any]) -> AgentLoopSession:
+        """Rebuild a session from a snapshot; reset wall-clock timers to now."""
+        known = {k: v for k, v in state.items() if k in cls._SNAPSHOT_FIELDS}
+        now = time.perf_counter()
+        return cls(started_at=now, last_step_at=now, **known)
+
 
 class AgentLoopController:
     """Advises an agent's multi-step loop on when to stop, and learns.
@@ -261,6 +284,49 @@ class AgentLoopController:
     def get_session(self, session_id: str) -> AgentLoopSession:
         """Return the raw session object (for MCP CDV wiring)."""
         return self._require(session_id)
+
+    def restore_from_snapshot(self, state: dict[str, Any]) -> str:
+        """Rehydrate an in-memory session from a persisted snapshot.
+
+        Args:
+            state: A dict produced by :meth:`AgentLoopSession.to_snapshot`.
+
+        Returns:
+            The restored ``session_id``.
+        """
+        session = AgentLoopSession.from_snapshot(state)
+        self._sessions[session.session_id] = session
+        logger.info(
+            "agent_loop_restored",
+            session_id=session.session_id,
+            steps_used=len(session.scores),
+            task_type=session.task_type,
+        )
+        return session.session_id
+
+    def hydrate_active_loops(self, active_runs: list[dict[str, Any]]) -> int:
+        """Restore all persisted agent-loop sessions on server startup.
+
+        Args:
+            active_runs: Rows from the ``active_runs`` store (each ``{"run_type",
+                "state", ...}``); only ``run_type == "agent_loop"`` rows are used.
+
+        Returns:
+            The number of sessions hydrated.
+        """
+        count = 0
+        for run in active_runs:
+            if run.get("run_type") != "agent_loop":
+                continue
+            state = run.get("state") or {}
+            if not state.get("session_id") or state.get("closed"):
+                continue
+            try:
+                self.restore_from_snapshot(state)
+                count += 1
+            except (TypeError, ValueError) as exc:  # malformed snapshot
+                logger.warning("agent_loop_restore_failed", error=str(exc))
+        return count
 
     def _decide(
         self,

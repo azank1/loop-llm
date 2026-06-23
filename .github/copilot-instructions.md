@@ -18,4 +18,12 @@ Act on the returned `route`: `elicit` → clarify first | `decompose` → plan f
 
 For non-trivial tasks use `loopllm_run_pipeline` as the entry point.
 
-For multi-step iterative work, use `loopllm_loop_start` → `loopllm_loop_step(step_output=...)` → `loopllm_loop_end`. Submit step artifacts; do not self-grade.
+For multi-step iterative work, use `loopllm_loop_start` → `loopllm_loop_step(step_output=...)` → `loopllm_loop_end`. Submit step artifacts; do not self-grade. The verdict includes `cdv_mode` (`full` = independent critic consulted; `channel_a_only` = deterministic checks only).
+
+---
+
+## Memory & recovery (v0.8)
+
+**Recall before planning.** For tasks similar to past work, call `loopllm_recall("<goal>")` before planning. `loopllm_loop_start` also returns `similar_episodes` automatically — read them. If `loopllm_intercept` returns `recall_available: true`, recall first. `loopllm_loop_end` records the outcome to episodic memory automatically.
+
+**Resume after an IDE reload.** Call `loopllm_run_status`. If it shows an active run, call `loopllm_loop_resume` (optionally with `session_id`) **before** starting a new loop, so the in-progress loop continues instead of restarting cold.

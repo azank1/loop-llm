@@ -1,8 +1,57 @@
 """Tests for episodic memory (schema v5)."""
 from __future__ import annotations
 
-from loopllm.episodes import EpisodicStore, extract_tags, summarize_artifacts
+import sqlite3
+
+from loopllm.episodes import EpisodicStore, extract_tags, summarize_artifacts, tokenize_for_recall
 from loopllm.store import LoopStore, SCHEMA_VERSION
+
+
+def test_migration_v4_to_v5(tmp_path) -> None:
+    """A pre-existing v4 database gains the v5 episodic tables on open."""
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        "CREATE TABLE schema_version (version INTEGER NOT NULL);"
+        "INSERT INTO schema_version (version) VALUES (4);"
+    )
+    conn.commit()
+    conn.close()
+
+    store = LoopStore(db_path=db)
+    with store._connection() as c:
+        version = c.execute("SELECT version FROM schema_version").fetchone()["version"]
+        tables = {
+            r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    assert version == SCHEMA_VERSION == 5
+    assert {"episodes", "active_runs"} <= tables
+
+
+def test_recall_ranks_relevant_first_with_tag_boost(store: LoopStore) -> None:
+    episodic = EpisodicStore(store)
+    episodic.record_episode(
+        episode_type="agent_loop", goal="fix flaky auth tests", task_type="bugfix",
+        model_id="m", summary="auth pytest flaky resolved", score_final=0.9,
+    )
+    episodic.record_episode(
+        episode_type="agent_loop", goal="update billing docs", task_type="docs",
+        model_id="m", summary="documentation refresh", score_final=0.8,
+    )
+    hits = episodic.recall("flaky auth tests", k=5)
+    assert hits and "auth" in hits[0]["goal"].lower()
+
+
+def test_recall_ignores_stopwords(store: LoopStore) -> None:
+    episodic = EpisodicStore(store)
+    episodic.record_episode(
+        episode_type="agent_loop", goal="refactor the api client", task_type="refactor",
+        model_id="m", summary="api refactor done",
+    )
+    # Query is all stopwords/short tokens except 'api' -> still finds the episode.
+    hits = episodic.recall("how do the api", k=5)
+    assert hits and "api" in hits[0]["goal"].lower()
+    assert tokenize_for_recall("how do the api") == ["api"]
 
 
 def test_schema_v5_migration(store: LoopStore) -> None:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -24,6 +25,22 @@ from loopllm.priors import (
 logger = structlog.get_logger(__name__)
 
 SCHEMA_VERSION = 5
+
+# Common words ignored during episodic recall so generic terms don't dominate.
+_RECALL_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "that", "this", "from", "into", "your",
+    "you", "are", "was", "were", "has", "have", "had", "not", "but", "all",
+    "can", "will", "how", "why", "what", "when", "make", "made", "use",
+})
+
+
+def _recall_terms(query: str) -> list[str]:
+    """Tokenise a recall query: lowercase words >2 chars, stopword-filtered, deduped."""
+    seen: list[str] = []
+    for tok in re.split(r"\W+", query.lower()):
+        if len(tok) > 2 and tok not in _RECALL_STOPWORDS and tok not in seen:
+            seen.append(tok)
+    return seen
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -1180,31 +1197,38 @@ class LoopStore:
         task_type: str | None = None,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
-        """Keyword search over goal, summary, and tags (BM25-lite scoring)."""
-        candidates = self.list_episodes(task_type=task_type, limit=max(limit * 20, 50))
-        if not query.strip():
-            return candidates[:limit]
+        """Recall episodes by weighted keyword overlap over goal/summary/tags.
 
-        terms = [t.lower() for t in query.split() if len(t) > 2]
+        Scoring is deterministic term-overlap (not BM25): each distinct query
+        term contributes its occurrence count in goal+summary, with extra weight
+        when it matches a tag or the task_type. Ties break toward more recent
+        episodes. The public signature is intentionally stable so a SQLite FTS5
+        backend can replace this body later without changing callers (see the
+        FTS5 upgrade path note in ``episodes.py``).
+        """
+        candidates = self.list_episodes(task_type=task_type, limit=max(limit * 20, 50))
+        terms = _recall_terms(query)
         if not terms:
             return candidates[:limit]
 
-        scored: list[tuple[float, dict[str, Any]]] = []
+        scored: list[tuple[float, str, dict[str, Any]]] = []
         for ep in candidates:
-            hay = " ".join(
-                [
-                    ep["goal"],
-                    ep["summary"],
-                    " ".join(ep.get("tags") or []),
-                    ep.get("task_type") or "",
-                ]
-            ).lower()
-            hits = sum(hay.count(term) for term in terms)
-            if hits > 0:
-                scored.append((float(hits), ep))
+            text = f"{ep['goal']} {ep['summary']}".lower()
+            tag_blob = " ".join(ep.get("tags") or []).lower()
+            tt = (ep.get("task_type") or "").lower()
+            score = 0.0
+            for term in terms:
+                score += text.count(term)              # base term frequency
+                if term in tag_blob:
+                    score += 2.0                       # tag match boost
+                if term == tt:
+                    score += 1.5                       # task_type match boost
+            if score > 0:
+                scored.append((score, ep.get("recorded_at") or "", ep))
 
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [ep for _, ep in scored[:limit]]
+        # Highest score first; recency (recorded_at desc) breaks ties.
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return [ep for _, _, ep in scored[:limit]]
 
     def upsert_active_run(
         self,

@@ -1,6 +1,6 @@
 # PromptLoop
 
-[![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=22&pause=1000&color=00CFFF&center=true&vCenter=true&width=700&lines=PromptLoop+%E2%80%94+Prompt+Quality+Loop;Conservative+Dual-Verify+Agent+Loops;Bayesian+Adaptive+Exit+%2B+Thompson+Sampling;MCP+Server+%E2%80%94+28+Tools+for+VS+Code+%2B+Cursor;Online+Weight+Learning+via+SGD;Zero+Training+%E2%80%94+Model+Agnostic)](https://github.com/azank1/loop-llm)
+[![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=22&pause=1000&color=00CFFF&center=true&vCenter=true&width=700&lines=PromptLoop+%E2%80%94+Prompt+Quality+Loop;Conservative+Dual-Verify+Agent+Loops;Bayesian+Adaptive+Exit+%2B+Thompson+Sampling;MCP+Server+%E2%80%94+31+Tools+for+VS+Code+%2B+Cursor;Online+Weight+Learning+via+SGD;Zero+Training+%E2%80%94+Model+Agnostic)](https://github.com/azank1/loop-llm)
 
 [![CI](https://github.com/azank1/loop-llm/actions/workflows/ci.yml/badge.svg)](https://github.com/azank1/loop-llm/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -21,11 +21,24 @@ PromptLoop uses two complementary memory layers in `~/.loopllm/store.db`:
 | Layer | What it learns | MCP tools |
 |---|---|---|
 | **Meta-memory** (v0.6+) | Optimal loop depth, convergence rate, scoring weights | `loopllm_loop_end`, `loopllm_feedback` |
-| **Episodic memory** (v0.8+) | Summaries of past loops/plans — keyword recall | `loopllm_recall`, `loopllm_run_status` |
+| **Episodic memory** (v0.8+) | Summaries of past loops/plans — keyword recall | `loopllm_recall`, `loopllm_run_status`, `loopllm_loop_resume` |
 
 Episodic memory is **not** full chat RAG — it stores compressed outcomes so the next
-loop of the same task type can recall *what worked before*. For complex multi-step work, **DAG virtual sub-agents** are planned for v0.9 on branch
-`az/ft/dag-virtual-agents` — not released yet.
+loop of the same task type can recall *what worked before*. Recall is also injected
+automatically: `loopllm_loop_start` returns `similar_episodes`, and
+`loopllm_intercept` flags `recall_available` on clear prompts. (Ranking is
+deterministic keyword overlap today; the seam is stable for an FTS5/vector upgrade
+in v0.10.)
+
+**Session continuity (recovery contract).** Every verified `loopllm_loop_step` is
+checkpointed to the `active_runs` table. If the MCP server or IDE restarts, the
+server rehydrates in-progress loops on startup; `loopllm_run_status` shows them and
+`loopllm_loop_resume` continues the loop where it left off — no cold restart. Each
+`loopllm_loop_step` verdict also reports `cdv_mode` (`full` when an independent
+critic ran via MCP sampling, `channel_a_only` when only deterministic checks ran).
+
+For complex multi-step work, **DAG virtual sub-agents** are planned for v0.9 on
+branch `az/ft/dag-virtual-agents` — not released yet.
 
 ---
 
@@ -52,7 +65,7 @@ training data, no PyTorch.
 ```mermaid
 flowchart TB
   subgraph interfaces [Interfaces]
-    MCP[MCP 30 tools on v0.8 branch]
+    MCP[MCP 31 tools on v0.8 branch]
     Ext[VS Code extension]
   end
   subgraph layers [Three layers]
@@ -474,7 +487,7 @@ python -m pytest tests/ -q          # ~220 tests, ~2s
 See [CONTRIBUTING.md](CONTRIBUTING.md) for branch naming (`az/<type>/<short>`) and checks.
 
 **Key files:**
-- `src/loopllm/mcp_server.py` — 30 MCP tools + MCP Sampling helpers
+- `src/loopllm/mcp_server.py` — 31 MCP tools + MCP Sampling helpers
 - `src/loopllm/episodes.py` — episodic memory record/recall
 - `src/loopllm/step_scorer.py` — Conservative Dual-Verify scoring
 - `src/loopllm/guards.py` — composable agent-loop stop stack

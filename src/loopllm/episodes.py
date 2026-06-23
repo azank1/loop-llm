@@ -1,13 +1,19 @@
-"""Episodic memory: record and recall completed loop/plan outcomes."""
+"""Episodic memory: record and recall completed loop/plan outcomes.
+
+Recall ranking is deterministic weighted keyword overlap (see
+``store.search_episodes``). The public ``EpisodicStore.recall`` /
+``store.search_episodes`` signature is stable, so the ranking backend can be
+upgraded to SQLite FTS5 (a virtual table over goal+summary+tags, no new deps)
+or an embedding index later without touching callers — deferred to v0.10.
+"""
 from __future__ import annotations
 
 import hashlib
 import json
-import re
 from pathlib import Path
 from typing import Any
 
-from loopllm.store import LoopStore
+from loopllm.store import LoopStore, _recall_terms
 
 _MAX_SUMMARY = 500
 
@@ -145,5 +151,5 @@ class EpisodicStore:
 
 
 def tokenize_for_recall(text: str) -> list[str]:
-    """Split text into recall terms (for tests)."""
-    return [t for t in re.split(r"\W+", text.lower()) if len(t) > 2]
+    """Split text into recall terms (stopword-filtered, deduped)."""
+    return _recall_terms(text)

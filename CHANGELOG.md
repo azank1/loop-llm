@@ -12,9 +12,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Episodic memory** (SQLite schema v5): `episodes` and `active_runs` tables.
 - [`EpisodicStore`](src/loopllm/episodes.py): record completed loops/plans, keyword recall,
   crash-safe active run snapshots (`~/.loopllm/active_run.json` mirror).
-- MCP tools: `loopllm_recall`, `loopllm_run_status` (30 tools total).
-- Hooks: `loopllm_loop_end`, `loopllm_plan_register` / `plan_update` record episodes.
-- Tests: `tests/test_episodes.py`.
+- **Session continuity / recovery contract**: agent loops survive an MCP/IDE restart.
+  - `AgentLoopSession.to_snapshot()` / `AgentLoopController.restore_from_snapshot()` +
+    `hydrate_active_loops()`; in-progress loops are rehydrated on server startup.
+  - `loopllm_loop_step` checkpoints the verified session to `active_runs` each step.
+  - New tool `loopllm_loop_resume` continues a loop where it left off.
+- **Recall injection**: `loopllm_loop_start` returns `similar_episodes` + `memory_hint`;
+  `loopllm_intercept` flags `recall_available` on clear prompts.
+- **Sampling transparency**: `loopllm_loop_step` verdict reports `cdv_mode`
+  (`full` vs `channel_a_only`) with a reason.
+- Improved recall ranking (stopword filter, dedup, tag/task_type boost, recency
+  tie-break) behind a stable seam for a future FTS5/vector backend.
+- MCP tools: `loopllm_recall`, `loopllm_run_status`, `loopllm_loop_resume` (**31 tools total**).
+- Hooks: `loopllm_loop_end`, `loopllm_plan_register` / `plan_update` record episodes;
+  `loopllm_plan_delete` clears the recovery snapshot.
+- Cross-IDE agent contract: server `instructions` updated; `.cursor/rules/loopllm.mdc`
+  (new) and `.github/copilot-instructions.md` document recall + resume.
+- Tests: `tests/test_episodes.py` (migration + ranking), `tests/test_mcp_episodic.py` (new);
+  example `examples/episodic_recall_loop.py`.
+- CI now also runs on `az/ft/**` pushes and `workflow_dispatch`.
 
 ## [0.7.0] — 2026-06-22
 
