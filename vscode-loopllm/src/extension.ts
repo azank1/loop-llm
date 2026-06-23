@@ -12,28 +12,40 @@ import { StatusBarGauge } from "./statusBar";
 import { StatusWatcher } from "./statusWatcher";
 import { DataProvider } from "./dataProvider";
 import { DashboardViewProvider } from "./dashboardProvider";
+import { LoopMonitorProvider } from "./loopMonitorProvider";
 import { PromptLabProvider } from "./promptLabProvider";
 
 let statusBar: StatusBarGauge;
 let watcher: StatusWatcher;
 let dataProvider: DataProvider;
 let dashboardProvider: DashboardViewProvider;
+let loopMonitorProvider: LoopMonitorProvider;
 let promptLabProvider: PromptLabProvider;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let scoreDebounce: ReturnType<typeof setTimeout> | undefined;
+
+/** Build a PATH that includes common loopllm install locations. */
+function buildEnv(): NodeJS.ProcessEnv {
+  const home = process.env.HOME ?? "";
+  const extras = [
+    `${home}/.local/bin`,
+    "/usr/local/bin",
+    "/usr/bin",
+    "/opt/homebrew/bin",
+  ].join(":");
+  return { ...process.env, PATH: `${extras}:${process.env.PATH ?? ""}` };
+}
 
 /** Spawn `loopllm score <text>` — writes status.json which StatusWatcher picks up. */
 function triggerScore(text: string, dbPath: string): void {
   const trimmed = text.trim();
   if (trimmed.length < 8) { return; }
   if (scoreDebounce) { clearTimeout(scoreDebounce); }
-  const extraPaths = "/home/codespace/.python/current/bin:/usr/local/bin:/usr/bin:/opt/homebrew/bin";
-  const env = { ...process.env, PATH: `${extraPaths}:${process.env.PATH ?? ""}` };
   scoreDebounce = setTimeout(() => {
     cp.execFile(
       "loopllm",
       ["--db", dbPath, "score", trimmed.slice(0, 2000)],
-      { timeout: 6000, env },
+      { timeout: 6000, env: buildEnv() },
       () => { /* status.json written; StatusWatcher fires gauge update */ }
     );
   }, 650);
@@ -58,6 +70,7 @@ export function activate(context: vscode.ExtensionContext): void {
     context.extensionUri,
     dataProvider
   );
+  loopMonitorProvider = new LoopMonitorProvider(dbPath);
   promptLabProvider = new PromptLabProvider(dbPath);
 
   // Register sidebar webviews
@@ -65,6 +78,12 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerWebviewViewProvider(
       "loopllm.promptLab",
       promptLabProvider
+    )
+  );
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      "loopllm.loopMonitor",
+      loopMonitorProvider
     )
   );
   context.subscriptions.push(
@@ -132,13 +151,15 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   watcher.start();
 
-  // Poll database periodically for aggregate stats
+  // Poll database periodically for aggregate stats + loop monitor
   pollTimer = setInterval(async () => {
     await refreshData();
+    loopMonitorProvider.refresh();
   }, pollInterval);
 
   // Initial load
   void refreshData();
+  loopMonitorProvider.refresh();
 
   // Cleanup
   context.subscriptions.push({

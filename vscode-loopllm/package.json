@@ -2,7 +2,7 @@
   "name": "loopllm-prompt-gauge",
   "displayName": "Loop LLM — Prompt Quality Gauge",
   "description": "Real-time prompt quality scoring, learning curve tracking, and improvement suggestions powered by loop-llm",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "loopllm",
   "license": "MIT",
   "engines": {
@@ -39,6 +39,11 @@
           "type": "webview",
           "id": "loopllm.promptLab",
           "name": "Prompt Lab"
+        },
+        {
+          "type": "webview",
+          "id": "loopllm.loopMonitor",
+          "name": "Loop Monitor"
         },
         {
           "type": "webview",

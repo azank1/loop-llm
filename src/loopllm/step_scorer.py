@@ -97,6 +97,7 @@ async def score_channel_b(
         f'{{"score":0.0,"passed":false,"deficiencies":["..."],"feedback":"..."}}',
         max_tokens=500,
     )
+    parse_failed = False
     try:
         m = re.search(r"\{.*\}", verify_result, re.DOTALL)
         data = json.loads(m.group()) if m else {}
@@ -106,10 +107,14 @@ async def score_channel_b(
         deficiencies = list(data.get("deficiencies", fast_deficiencies))
         feedback = str(data.get("feedback", ""))
     except Exception:  # noqa: BLE001
+        # Conservative fallback: mark parse failure so the caller can substitute
+        # Channel A score rather than the potentially-inflated fast_score (which
+        # returns 0.9 when quality_criteria is empty).
         score = fast_score
         passed = fast_score >= 0.7
         deficiencies = fast_deficiencies
         feedback = verify_result[:300]
+        parse_failed = True
 
     return {
         "score": score,
@@ -117,6 +122,7 @@ async def score_channel_b(
         "deficiencies": deficiencies,
         "feedback": feedback,
         "keyword_match": fast_score,
+        "parse_failed": parse_failed,
     }
 
 
@@ -126,8 +132,15 @@ async def conservative_dual_verify(
     quality_criteria: list[str],
     evaluator: Evaluator,
     ctx: Any | None,
+    *,
+    quality_threshold: float = 0.7,
 ) -> DualVerifyScore:
-    """Run Conservative Dual-Verify: min(Channel A, Channel B)."""
+    """Run Conservative Dual-Verify: min(Channel A, Channel B).
+
+    ``quality_threshold`` is the session threshold from ``AgentLoopSession``.
+    ``passed`` is set relative to this threshold so it is consistent with the
+    guard-stack decision — it never contradicts the continue/stop verdict.
+    """
     channel_a = score_channel_a(step_output, goal, evaluator)
     deficiencies = list(channel_a.deficiencies)
 
@@ -136,24 +149,41 @@ async def conservative_dual_verify(
             final_score=channel_a.score,
             channel_a_score=channel_a.score,
             channel_b_score=None,
-            passed=channel_a.passed,
+            passed=channel_a.score >= quality_threshold and not deficiencies,
             deficiencies=deficiencies,
             channel_a_sub_scores=dict(channel_a.sub_scores),
             channel_b_feedback="",
             source="channel_a_only",
         )
 
-    channel_b = await score_channel_b(step_output, goal, quality_criteria, ctx)
-    final = min(channel_a.score, channel_b["score"])
+    try:
+        channel_b = await score_channel_b(step_output, goal, quality_criteria, ctx)
+    except Exception:  # noqa: BLE001 — sampling unavailable; degrade gracefully
+        return DualVerifyScore(
+            final_score=channel_a.score,
+            channel_a_score=channel_a.score,
+            channel_b_score=None,
+            passed=channel_a.score >= quality_threshold and not deficiencies,
+            deficiencies=deficiencies,
+            channel_a_sub_scores=dict(channel_a.sub_scores),
+            channel_b_feedback="",
+            source="channel_a_only",
+        )
+    # If the critic response failed to parse, its fast_score may be 0.9 (the
+    # default when quality_criteria is empty), which would silently bypass the
+    # conservative min(A, B) fusion.  Use channel_a.score as the fallback so the
+    # fusion stays conservative even on malformed critic output.
+    b_score = channel_a.score if channel_b.get("parse_failed") else channel_b["score"]
+    final = min(channel_a.score, b_score)
     all_deficiencies = deficiencies + [
         d for d in channel_b["deficiencies"] if d not in deficiencies
     ]
-    passed = final >= 0.7 and not all_deficiencies
+    passed = final >= quality_threshold and not all_deficiencies
 
     return DualVerifyScore(
         final_score=final,
         channel_a_score=channel_a.score,
-        channel_b_score=channel_b["score"],
+        channel_b_score=b_score,
         passed=passed,
         deficiencies=all_deficiencies,
         channel_a_sub_scores=dict(channel_a.sub_scores),
@@ -162,14 +192,18 @@ async def conservative_dual_verify(
     )
 
 
-def legacy_self_report_score(score: float) -> DualVerifyScore:
+def legacy_self_report_score(
+    score: float,
+    *,
+    quality_threshold: float = 0.7,
+) -> DualVerifyScore:
     """Wrap a legacy agent self-reported score (not CDV)."""
     clamped = max(0.0, min(1.0, float(score)))
     return DualVerifyScore(
         final_score=clamped,
         channel_a_score=clamped,
         channel_b_score=None,
-        passed=clamped >= 0.7,
+        passed=clamped >= quality_threshold,
         deficiencies=[],
         channel_a_sub_scores={},
         channel_b_feedback="",

@@ -74,8 +74,9 @@ export class PromptLabProvider implements vscode.WebviewViewProvider {
 
     // VS Code child processes get a minimal PATH that often excludes the
     // Python env bin dir. Augment with common locations so loopllm is found.
+    const home = process.env.HOME ?? "";
     const extraPaths = [
-      "/home/codespace/.python/current/bin",
+      `${home}/.local/bin`,
       "/usr/local/bin",
       "/usr/bin",
       "/opt/homebrew/bin",
@@ -94,11 +95,7 @@ export class PromptLabProvider implements vscode.WebviewViewProvider {
       cp.execFile("python3", ["-m", "loopllm", ...args], { timeout: 8000, env }, (err2, stdout2) => {
         if (!err2) { this._parseAndPost(stdout2); return; }
 
-        // Fallback 2: absolute path via common env layout
-        cp.execFile("/home/codespace/.python/current/bin/loopllm", args, { timeout: 8000 }, (err3, stdout3) => {
-          if (!err3) { this._parseAndPost(stdout3); return; }
-          this._post({ type: "error", message: "loopllm not found — run: pip install -e .[mcp] in the repo root" });
-        });
+        this._post({ type: "error", message: "loopllm not found — run: pipx install -e '.[mcp]' in the repo root" });
       });
     });
   }
