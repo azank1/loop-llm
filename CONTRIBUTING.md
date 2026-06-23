@@ -9,7 +9,7 @@ the branch/commit conventions, and the checks your change must pass.
 git clone https://github.com/azank1/loop-llm
 cd loop-llm
 pip install -e ".[dev]"
-python -m pytest tests/ -q          # 226 tests (222 pass, 4 integration skipped)
+python -m pytest tests/ -q          # 235 tests (231 pass, 4 integration skipped)
 ```
 
 ## Branch naming convention
@@ -56,8 +56,9 @@ python -m pytest tests/ -q
 | Agent-loop guard stack | `src/loopllm/guards.py` |
 | Evaluator factory | `src/loopllm/evaluator_factory.py` |
 | Bayesian early stopping | `src/loopllm/adaptive_exit.py` |
-| MCP tools (28) | `src/loopllm/mcp_server.py` |
-| SQLite persistence (schema v4) | `src/loopllm/store.py` |
+| MCP tools (31) | `src/loopllm/mcp_server.py` |
+| Episodic memory | `src/loopllm/episodes.py` |
+| SQLite persistence (schema v5) | `src/loopllm/store.py` |
 | CLI | `src/loopllm/cli.py` |
 | Providers (agent/ollama/openrouter/mock) | `src/loopllm/providers/` |
 

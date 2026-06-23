@@ -1,6 +1,6 @@
 # PromptLoop
 
-[![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=22&pause=1000&color=00CFFF&center=true&vCenter=true&width=700&lines=PromptLoop+%E2%80%94+Prompt+Quality+Loop;Conservative+Dual-Verify+Agent+Loops;Bayesian+Adaptive+Exit+%2B+Thompson+Sampling;MCP+Server+%E2%80%94+28+Tools+for+VS+Code+%2B+Cursor;Online+Weight+Learning+via+SGD;Zero+Training+%E2%80%94+Model+Agnostic)](https://github.com/azank1/loop-llm)
+[![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=22&pause=1000&color=00CFFF&center=true&vCenter=true&width=700&lines=PromptLoop+%E2%80%94+Prompt+Quality+Loop;Conservative+Dual-Verify+Agent+Loops;Bayesian+Adaptive+Exit+%2B+Thompson+Sampling;MCP+Server+%E2%80%94+31+Tools+for+VS+Code+%2B+Cursor;Online+Weight+Learning+via+SGD;Zero+Training+%E2%80%94+Model+Agnostic)](https://github.com/azank1/loop-llm)
 
 [![CI](https://github.com/azank1/loop-llm/actions/workflows/ci.yml/badge.svg)](https://github.com/azank1/loop-llm/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -10,7 +10,35 @@
 **A Bayesian MCP sidecar for your IDE agent** — observe prompts, refine outputs, and
 stop agent loops using externally verified scores.
 
-> The underlying CLI and tool API ship as `loopllm` (the original name). PromptLoop is the project brand. Current release: **v0.7.0**.
+> Current release: **v0.7.0**. Next: **v0.8.0** episodic memory (branch `az/ft/episodic-memory`, not released).
+
+---
+
+## Memory model
+
+PromptLoop uses two complementary memory layers in `~/.loopllm/store.db`:
+
+| Layer | What it learns | MCP tools |
+|---|---|---|
+| **Meta-memory** (v0.6+) | Optimal loop depth, convergence rate, scoring weights | `loopllm_loop_end`, `loopllm_feedback` |
+| **Episodic memory** (v0.8+) | Summaries of past loops/plans — keyword recall | `loopllm_recall`, `loopllm_run_status`, `loopllm_loop_resume` |
+
+Episodic memory is **not** full chat RAG — it stores compressed outcomes so the next
+loop of the same task type can recall *what worked before*. Recall is also injected
+automatically: `loopllm_loop_start` returns `similar_episodes`, and
+`loopllm_intercept` flags `recall_available` on clear prompts. (Ranking is
+deterministic keyword overlap today; the seam is stable for an FTS5/vector upgrade
+in v0.10.)
+
+**Session continuity (recovery contract).** Every verified `loopllm_loop_step` is
+checkpointed to the `active_runs` table. If the MCP server or IDE restarts, the
+server rehydrates in-progress loops on startup; `loopllm_run_status` shows them and
+`loopllm_loop_resume` continues the loop where it left off — no cold restart. Each
+`loopllm_loop_step` verdict also reports `cdv_mode` (`full` when an independent
+critic ran via MCP sampling, `channel_a_only` when only deterministic checks ran).
+
+For complex multi-step work, **DAG virtual sub-agents** are planned for v0.9 on
+branch `az/ft/dag-virtual-agents` — not released yet.
 
 ---
 
@@ -37,7 +65,7 @@ training data, no PyTorch.
 ```mermaid
 flowchart TB
   subgraph interfaces [Interfaces]
-    MCP[MCP 28 tools]
+    MCP[MCP 31 tools on v0.8 branch]
     Ext[VS Code extension]
   end
   subgraph layers [Three layers]
@@ -46,7 +74,7 @@ flowchart TB
     L3[Layer 3: CDV agent loops loop_start step end]
   end
   subgraph learn [Learning]
-    Priors[AdaptivePriors SQLite v4]
+    Priors[AdaptivePriors + Episodes SQLite v5]
   end
   interfaces --> layers
   layers --> Priors
@@ -62,7 +90,7 @@ flowchart TB
 
 ## Quickstart
 
-Published on [PyPI](https://pypi.org/project/loopllm/0.7.0/) as `loopllm` v0.7.0. Two ways to use it: the **CLI** (try in seconds) and the **MCP server** (main use — plugs into Cursor / VS Code).
+Published on [PyPI](https://pypi.org/project/loopllm/) as `loopllm` v0.7.0 (latest release). Two ways to use it: the **CLI** (try in seconds) and the **MCP server** (main use — plugs into Cursor / VS Code).
 
 ### Install
 
@@ -388,7 +416,7 @@ PyPI: [`loopllm`](https://pypi.org/project/loopllm/) · extras: `[mcp]` (IDE ser
 
 ---
 
-## Tools (28)
+## Tools (32)
 
 | Tool | What it does |
 |---|---|
@@ -413,13 +441,15 @@ PyPI: [`loopllm`](https://pypi.org/project/loopllm/) · extras: `[mcp]` (IDE ser
 | `loopllm_loop_step` | Submit step artifact for CDV; returns continue/stop + channel scores |
 | `loopllm_loop_end` | Close loop and learn optimal depth from verified trajectories |
 | `loopllm_loop_status` | Inspect an active agent-loop session |
+| `loopllm_recall` | Keyword recall of similar past episodes |
+| `loopllm_run_status` | Active loop/plan snapshots for crash recovery |
 | `loopllm_classify_task` | Label a prompt's task type |
 | `loopllm_analyze_prompt` | Generate clarifying questions ranked by Thompson-sampled gain |
 | `loopllm_list_tasks` | List tasks from the persistent store |
 | `loopllm_show_task` | Detail view for a single task |
 | `loopllm_report` | Learned weights, Bayesian priors, question effectiveness stats |
 
-Plans and learned weights persist to `~/.loopllm/store.db` (schema v4).
+Plans, episodes, and learned weights persist to `~/.loopllm/store.db` (schema v5).
 
 ---
 
@@ -451,19 +481,20 @@ print(result.output, result.best_score, result.converged)
 See **Develop from source** above for clone and setup. Then:
 
 ```bash
-python -m pytest tests/ -q          # 219 tests (215 pass, 4 skipped), ~2s
+python -m pytest tests/ -q          # ~220 tests, ~2s
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for branch naming (`az/<type>/<short>`) and checks.
 
 **Key files:**
-- `src/loopllm/mcp_server.py` — 28 MCP tools + MCP Sampling helpers
+- `src/loopllm/mcp_server.py` — 31 MCP tools + MCP Sampling helpers
+- `src/loopllm/episodes.py` — episodic memory record/recall
 - `src/loopllm/step_scorer.py` — Conservative Dual-Verify scoring
 - `src/loopllm/guards.py` — composable agent-loop stop stack
 - `src/loopllm/agent_loop.py` — adaptive agent-loop controller
 - `src/loopllm/evaluator_factory.py` — build evaluators for CDV Channel A
 - `src/loopllm/priors.py` — Beta/Normal priors, Welford, Thompson Sampling
-- `src/loopllm/store.py` — SQLite persistence (schema v4)
+- `src/loopllm/store.py` — SQLite persistence (schema v5)
 - `src/loopllm/engine.py` — core refinement loop (`LoopedLLM`)
 
 PRs welcome. Add tests for new tools in `tests/`.

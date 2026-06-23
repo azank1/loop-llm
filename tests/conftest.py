@@ -5,6 +5,12 @@ import pytest
 
 from loopllm import AdaptivePriors, CallObservation, LoopConfig
 from loopllm.providers.mock import MockLLMProvider
+from loopllm.store import LoopStore
+
+
+@pytest.fixture
+def store() -> LoopStore:
+    return LoopStore(db_path=":memory:")
 
 
 @pytest.fixture

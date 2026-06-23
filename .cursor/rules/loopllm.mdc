@@ -1,0 +1,32 @@
+---
+description: How to drive the loopllm MCP sidecar (observe, verify, remember, resume)
+alwaysApply: true
+---
+
+# loopllm agent rules
+
+loopllm is an MCP sidecar that scores prompts, verifies agent work, and remembers
+past runs. Follow this contract for non-trivial requests:
+
+1. **Observe first.** Call `loopllm_intercept` with the user's message before acting.
+   Follow its `route` (elicit / refine / decompose). If it reports
+   `recall_available: true`, call `loopllm_recall` before planning.
+
+2. **Recall before planning.** For tasks similar to past work, call
+   `loopllm_recall("<goal>")` to reuse what worked. `loopllm_loop_start` also returns
+   `similar_episodes` automatically — read them.
+
+3. **Verify, don't self-grade.** For iterative work, use
+   `loopllm_loop_start(goal, task_type, required_patterns=[...])`, then after each step
+   call `loopllm_loop_step(session_id, step_output=<artifact>)` — submit the real
+   artifact (test log, diff, summary), **never your own score**. The server runs
+   Conservative Dual-Verify (deterministic checks + an independent critic) and returns
+   the verified score, a continue/stop verdict, and `cdv_mode`
+   (`full` vs `channel_a_only`). Honor the verdict; then `loopllm_loop_end`.
+
+4. **Resume after reload.** If the IDE reloaded, call `loopllm_run_status`. If it shows
+   an active run, call `loopllm_loop_resume` (optionally with `session_id`) **before**
+   starting a new loop, so the in-progress loop continues instead of restarting cold.
+
+5. **Memory is automatic.** `loopllm_loop_end` records the outcome to episodic memory
+   for next time — no extra step needed.

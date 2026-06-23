@@ -22,13 +22,14 @@ from loopllm.engine import (
     LoopMetrics,
     RefinementResult,
 )
+from loopllm.episodes import EpisodicStore
 from loopllm.guards import AgentLoopGuard, GuardContext, GuardStack
 from loopllm.priors import AdaptivePriors, CallObservation
 from loopllm.step_scorer import DualVerifyScore, conservative_dual_verify
 from loopllm.store import LoopStore, SQLiteBackedPriors
 from loopllm.tasks import Task, TaskOrchestrator, TaskPlan, TaskState
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
     # Engine
@@ -68,4 +69,6 @@ __all__ = [
     "TaskPlan",
     "TaskState",
     "TaskOrchestrator",
+    # Episodic memory
+    "EpisodicStore",
 ]

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -23,7 +24,23 @@ from loopllm.priors import (
 
 logger = structlog.get_logger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+
+# Common words ignored during episodic recall so generic terms don't dominate.
+_RECALL_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "that", "this", "from", "into", "your",
+    "you", "are", "was", "were", "has", "have", "had", "not", "but", "all",
+    "can", "will", "how", "why", "what", "when", "make", "made", "use",
+})
+
+
+def _recall_terms(query: str) -> list[str]:
+    """Tokenise a recall query: lowercase words >2 chars, stopword-filtered, deduped."""
+    seen: list[str] = []
+    for tok in re.split(r"\W+", query.lower()):
+        if len(tok) > 2 and tok not in _RECALL_STOPWORDS and tok not in seen:
+            seen.append(tok)
+    return seen
 
 _SCHEMA_SQL = """\
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -144,6 +161,34 @@ CREATE TABLE IF NOT EXISTS learned_weights (
 );
 """
 
+_SCHEMA_V5_SQL = """\
+CREATE TABLE IF NOT EXISTS episodes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    episode_type  TEXT NOT NULL,
+    goal          TEXT NOT NULL,
+    task_type     TEXT NOT NULL,
+    model_id      TEXT NOT NULL,
+    summary       TEXT NOT NULL,
+    artifact_ref  TEXT,
+    tags          TEXT NOT NULL DEFAULT '[]',
+    score_final   REAL,
+    steps_used    INTEGER,
+    stop_reason   TEXT,
+    recorded_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS active_runs (
+    run_id        TEXT PRIMARY KEY,
+    run_type      TEXT NOT NULL,
+    state_json    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_episodes_task_type ON episodes(task_type);
+CREATE INDEX IF NOT EXISTS idx_episodes_goal ON episodes(goal);
+CREATE INDEX IF NOT EXISTS idx_episodes_recorded ON episodes(recorded_at);
+"""
+
 
 class LoopStore:
     """SQLite-backed store for loop-llm state.
@@ -187,6 +232,7 @@ class LoopStore:
                 conn.executescript(_SCHEMA_V2_SQL)
                 conn.executescript(_SCHEMA_V3_SQL)
                 conn.executescript(_SCHEMA_V4_SQL)
+                conn.executescript(_SCHEMA_V5_SQL)
                 conn.execute(
                     "INSERT INTO schema_version (version) VALUES (?)",
                     (SCHEMA_VERSION,),
@@ -214,6 +260,8 @@ class LoopStore:
             conn.executescript(_SCHEMA_V3_SQL)
         if from_v < 4:
             conn.executescript(_SCHEMA_V4_SQL)
+        if from_v < 5:
+            conn.executescript(_SCHEMA_V5_SQL)
         conn.execute("UPDATE schema_version SET version = ?", (to_v,))
         conn.commit()
 
@@ -1077,6 +1125,195 @@ class LoopStore:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    # -- episodic memory (schema v5) -----------------------------------------
+
+    def insert_episode(
+        self,
+        *,
+        episode_type: str,
+        goal: str,
+        task_type: str,
+        model_id: str,
+        summary: str,
+        artifact_ref: str | None = None,
+        tags: list[str] | None = None,
+        score_final: float | None = None,
+        steps_used: int | None = None,
+        stop_reason: str | None = None,
+    ) -> int:
+        """Persist one completed loop/plan episode."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connection() as conn:
+            cursor = conn.execute(
+                """INSERT INTO episodes (
+                       episode_type, goal, task_type, model_id, summary,
+                       artifact_ref, tags, score_final, steps_used,
+                       stop_reason, recorded_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    episode_type,
+                    goal,
+                    task_type,
+                    model_id,
+                    summary,
+                    artifact_ref,
+                    json.dumps(tags or []),
+                    score_final,
+                    steps_used,
+                    stop_reason,
+                    now,
+                ),
+            )
+            conn.commit()
+            row_id = cursor.lastrowid
+            return int(row_id) if row_id is not None else 0
+
+    def list_episodes(
+        self,
+        *,
+        task_type: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return recent episodes, optionally filtered by task_type."""
+        with self._connection() as conn:
+            if task_type:
+                rows = conn.execute(
+                    """SELECT * FROM episodes WHERE task_type = ?
+                       ORDER BY recorded_at DESC LIMIT ?""",
+                    (task_type, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM episodes ORDER BY recorded_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        return [self._row_to_episode(row) for row in rows]
+
+    def search_episodes(
+        self,
+        query: str,
+        *,
+        task_type: str | None = None,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Recall episodes by weighted keyword overlap over goal/summary/tags.
+
+        Scoring is deterministic term-overlap (not BM25): each distinct query
+        term contributes its occurrence count in goal+summary, with extra weight
+        when it matches a tag or the task_type. Ties break toward more recent
+        episodes. The public signature is intentionally stable so a SQLite FTS5
+        backend can replace this body later without changing callers (see the
+        FTS5 upgrade path note in ``episodes.py``).
+        """
+        candidates = self.list_episodes(task_type=task_type, limit=max(limit * 20, 50))
+        terms = _recall_terms(query)
+        if not terms:
+            return candidates[:limit]
+
+        scored: list[tuple[float, str, dict[str, Any]]] = []
+        for ep in candidates:
+            text = f"{ep['goal']} {ep['summary']}".lower()
+            tag_blob = " ".join(ep.get("tags") or []).lower()
+            tt = (ep.get("task_type") or "").lower()
+            score = 0.0
+            for term in terms:
+                score += text.count(term)              # base term frequency
+                if term in tag_blob:
+                    score += 2.0                       # tag match boost
+                if term == tt:
+                    score += 1.5                       # task_type match boost
+            if score > 0:
+                scored.append((score, ep.get("recorded_at") or "", ep))
+
+        # Highest score first; recency (recorded_at desc) breaks ties.
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return [ep for _, _, ep in scored[:limit]]
+
+    def upsert_active_run(
+        self,
+        run_id: str,
+        run_type: str,
+        state: dict[str, Any],
+    ) -> None:
+        """Create or update an in-progress run snapshot."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connection() as conn:
+            conn.execute(
+                """INSERT INTO active_runs (run_id, run_type, state_json, updated_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(run_id) DO UPDATE SET
+                       run_type = excluded.run_type,
+                       state_json = excluded.state_json,
+                       updated_at = excluded.updated_at""",
+                (run_id, run_type, json.dumps(state), now),
+            )
+            conn.commit()
+
+    def get_active_run(self, run_id: str) -> dict[str, Any] | None:
+        """Load one active run by id."""
+        with self._connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM active_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "run_id": row["run_id"],
+            "run_type": row["run_type"],
+            "state": json.loads(row["state_json"]),
+            "updated_at": row["updated_at"],
+        }
+
+    def list_active_runs(self, run_type: str | None = None) -> list[dict[str, Any]]:
+        """List all active runs, optionally filtered by type."""
+        with self._connection() as conn:
+            if run_type:
+                rows = conn.execute(
+                    "SELECT * FROM active_runs WHERE run_type = ? ORDER BY updated_at DESC",
+                    (run_type,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM active_runs ORDER BY updated_at DESC"
+                ).fetchall()
+        return [
+            {
+                "run_id": row["run_id"],
+                "run_type": row["run_type"],
+                "state": json.loads(row["state_json"]),
+                "updated_at": row["updated_at"],
+            }
+            for row in rows
+        ]
+
+    def delete_active_run(self, run_id: str) -> bool:
+        """Remove an active run after completion."""
+        with self._connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM active_runs WHERE run_id = ?", (run_id,)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def _row_to_episode(row: sqlite3.Row) -> dict[str, Any]:
+        tags_raw = row["tags"]
+        tags = json.loads(tags_raw) if tags_raw else []
+        return {
+            "id": row["id"],
+            "episode_type": row["episode_type"],
+            "goal": row["goal"],
+            "task_type": row["task_type"],
+            "model_id": row["model_id"],
+            "summary": row["summary"],
+            "artifact_ref": row["artifact_ref"],
+            "tags": tags,
+            "score_final": row["score_final"],
+            "steps_used": row["steps_used"],
+            "stop_reason": row["stop_reason"],
+            "recorded_at": row["recorded_at"],
+        }
 
 
 class SQLiteBackedPriors(AdaptivePriors):

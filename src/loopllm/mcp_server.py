@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from loopllm.agent_loop import AgentLoopController
 from loopllm.elicitation import ElicitationSession, IntentRefiner, IntentSpec
 from loopllm.engine import LoopConfig, LoopedLLM
@@ -30,10 +32,13 @@ from loopllm.step_scorer import (
 )
 from loopllm.priors import CallObservation
 from loopllm.provider import LLMProvider
+from loopllm.episodes import EpisodicStore, artifact_ref_hash, summarize_artifacts
 from loopllm.plan_registry import get_registry
 from loopllm.providers.agent import AgentPassthroughProvider
 from loopllm.store import LoopStore, SQLiteBackedPriors
 from loopllm.tasks import TaskOrchestrator
+
+logger = structlog.get_logger(__name__)
 
 try:
     from mcp.server.fastmcp import Context
@@ -50,6 +55,7 @@ _provider: LLMProvider | None = None
 _default_model: str = "gpt-4o-mini"
 _active_sessions: dict[str, dict[str, Any]] = {}
 _agent_loop: AgentLoopController | None = None
+_episodic: EpisodicStore | None = None
 _status_path: Path | None = None
 _history_path: Path | None = None
 # Last per-dimension scores computed by _score_prompt_quality — used by SGD.
@@ -179,6 +185,15 @@ def _get_agent_loop() -> AgentLoopController:
     if _agent_loop is None:
         _agent_loop = AgentLoopController(_get_priors())
     return _agent_loop
+
+
+def _get_episodic() -> EpisodicStore:
+    global _episodic  # noqa: PLW0603
+    if _episodic is None:
+        db_path = Path(os.environ.get("LOOPLLM_DB", str(Path.home() / ".loopllm" / "store.db")))
+        mirror = db_path.parent / "active_run.json"
+        _episodic = EpisodicStore(_get_store(), mirror_path=mirror)
+    return _episodic
 
 
 def _build_evaluator(
@@ -545,6 +560,21 @@ def _tool_intercept(prompt: str) -> str:
         "complexity": complexity,
         "prior_knowledge": config,
     }
+
+    # Cheap recall hint: only when the prompt is clear enough to be worth it (M1).
+    if q >= 0.6:
+        try:
+            hits = _get_episodic().recall(prompt, task_type=task_type, k=1)
+        except Exception:  # noqa: BLE001
+            hits = []
+        if hits:
+            result["recall_available"] = True
+            result["recall_top_hit"] = hits[0].get("goal", "")
+            result["recall_hint"] = (
+                "Similar past work found — call loopllm_recall before planning."
+            )
+        else:
+            result["recall_available"] = False
 
     _write_status("intercept", {
         "quality_score": quality["quality_score"],
@@ -1389,6 +1419,20 @@ def _tool_loop_start(
         max_tokens=max_tokens,
         **eval_kwargs,
     )
+    episodic = _get_episodic()
+    episodic.upsert_active_run(session.session_id, "agent_loop", session.to_snapshot())
+
+    # Surface similar past episodes so the agent doesn't start cold (M1 recall).
+    similar = episodic.recall(goal, task_type=task_type, k=3)
+    similar_brief = [
+        {
+            "goal": ep.get("goal", ""),
+            "summary": ep.get("summary", ""),
+            "stop_reason": ep.get("stop_reason"),
+            "score_final": ep.get("score_final"),
+        }
+        for ep in similar
+    ]
     return json.dumps(
         {
             "session_id": session.session_id,
@@ -1401,6 +1445,12 @@ def _tool_loop_start(
             "total_observations": session.total_observations,
             "evaluator_type": session.evaluator_type,
             "quality_criteria": session.quality_criteria,
+            "similar_episodes": similar_brief,
+            "memory_hint": (
+                "Call loopllm_recall for more context on similar past runs."
+                if similar_brief
+                else "No similar episodes yet; this run will be recorded for next time."
+            ),
             "guidance": (
                 f"Run up to ~{session.suggested_budget} step(s). After each step, "
                 f"call loopllm_loop_step with step_output=<artifact> (test log, diff, "
@@ -1482,6 +1532,25 @@ async def _tool_loop_step(
         return json.dumps({"error": str(exc)})
 
     verdict.update(cdv_meta)
+    # Sampling transparency (M3): was Channel B (critic) actually consulted?
+    full_cdv = bool(step_output) and cdv_meta.get("channel_b_score") is not None
+    verdict["cdv_mode"] = "full" if full_cdv else "channel_a_only"
+    verdict["cdv_mode_reason"] = (
+        "Deterministic checks + independent critic (MCP sampling)."
+        if full_cdv
+        else "MCP sampling unavailable; scored by deterministic checks only."
+    )
+
+    # Checkpoint the verified step so the loop survives an MCP restart (M0).
+    if verdict.get("decision") != "stop":
+        try:
+            episodic = _get_episodic()
+            episodic.upsert_active_run(
+                session_id, "agent_loop", controller.get_session(session_id).to_snapshot()
+            )
+        except Exception:  # noqa: BLE001 — checkpointing must never break a step
+            pass
+
     return json.dumps(verdict, indent=2, default=str)
 
 
@@ -1489,9 +1558,32 @@ def _tool_loop_end(session_id: str, converged: bool | None = None) -> str:
     """Finalise an agent loop and learn from it for future budget predictions."""
     controller = _get_agent_loop()
     try:
+        session = controller.get_session(session_id)
         summary = controller.end(session_id, converged)
     except KeyError as exc:
         return json.dumps({"error": str(exc)})
+
+    episodic = _get_episodic()
+    stop_reason = session.last_reason if session.last_decision == "stop" else "closed"
+    episodic.record_episode(
+        episode_type="agent_loop",
+        goal=session.goal,
+        task_type=session.task_type,
+        model_id=session.model_id,
+        summary=summarize_artifacts(
+            session.goal,
+            step_outputs=session.step_outputs,
+            stop_reason=stop_reason,
+            score_final=summary.get("final_score"),
+        ),
+        artifact_ref=artifact_ref_hash(
+            session.step_outputs[-1] if session.step_outputs else ""
+        ),
+        score_final=summary.get("final_score"),
+        steps_used=summary.get("steps_run"),
+        stop_reason=stop_reason,
+    )
+    episodic.clear_active_run(session_id)
     return json.dumps(summary, indent=2, default=str)
 
 
@@ -1503,6 +1595,101 @@ def _tool_loop_status(session_id: str) -> str:
     except KeyError as exc:
         return json.dumps({"error": str(exc)})
     return json.dumps(status, indent=2, default=str)
+
+
+def _tool_recall(
+    query: str,
+    task_type: str | None = None,
+    k: int = 5,
+) -> str:
+    """Recall similar past episodes by keyword search."""
+    episodes = _get_episodic().recall(query, task_type=task_type, k=k)
+    return json.dumps({"query": query, "count": len(episodes), "episodes": episodes}, indent=2)
+
+
+def _tool_run_status() -> str:
+    """Return active loop/plan snapshots for IDE reload recovery."""
+    snapshot = _get_episodic().run_status_snapshot()
+    controller = _get_agent_loop()
+    loops: list[dict[str, Any]] = []
+    for run in snapshot.get("active_runs", []):
+        if run.get("run_type") == "agent_loop":
+            sid = run.get("run_id", "")
+            try:
+                loops.append(controller.status(sid))
+            except KeyError:
+                loops.append(run)
+    snapshot["active_agent_loops"] = loops
+    return json.dumps(snapshot, indent=2, default=str)
+
+
+def _tool_loop_resume(session_id: str | None = None) -> str:
+    """Resume an agent loop after an IDE/MCP restart.
+
+    With ``session_id`` omitted, resumes the single active loop or returns an
+    ambiguity list when several are pending. Rehydrates the in-memory session so
+    the next ``loopllm_loop_step`` succeeds.
+    """
+    controller = _get_agent_loop()
+    episodic = _get_episodic()
+
+    if session_id:
+        # Already live in this process — nothing to restore.
+        try:
+            return json.dumps(
+                {"resumed": True, "source": "memory", "status": controller.status(session_id)},
+                indent=2,
+                default=str,
+            )
+        except KeyError:
+            pass
+        run = episodic.get_active_run(session_id)
+        if run is None or run.get("run_type") != "agent_loop":
+            return json.dumps({"error": f"No active agent loop to resume: {session_id}"})
+        controller.restore_from_snapshot(run["state"])
+        return json.dumps(
+            {"resumed": True, "source": "store", "status": controller.status(session_id)},
+            indent=2,
+            default=str,
+        )
+
+    runs = [
+        r for r in episodic.list_active_runs(run_type="agent_loop")
+        if not (r.get("state") or {}).get("closed")
+    ]
+    if not runs:
+        return json.dumps({"resumed": False, "message": "No active agent loops to resume."})
+    if len(runs) > 1:
+        return json.dumps(
+            {
+                "resumed": False,
+                "ambiguous": True,
+                "message": "Multiple active loops; pass session_id.",
+                "candidates": [
+                    {
+                        "session_id": r["run_id"],
+                        "goal": (r.get("state") or {}).get("goal", ""),
+                        "steps_used": len((r.get("state") or {}).get("scores", [])),
+                    }
+                    for r in runs
+                ],
+            },
+            indent=2,
+            default=str,
+        )
+    only = runs[0]
+    sid = only["run_id"]
+    try:
+        controller.status(sid)  # already live?
+        source = "memory"
+    except KeyError:
+        controller.restore_from_snapshot(only["state"])
+        source = "store"
+    return json.dumps(
+        {"resumed": True, "source": source, "status": controller.status(sid)},
+        indent=2,
+        default=str,
+    )
 
 
 def _tool_list_tasks(
@@ -1560,6 +1747,11 @@ def _tool_plan_register(
     # Persist immediately so plans survive MCP server restarts
     store = _get_store()
     store.save_plan(plan.to_dict())
+    _get_episodic().upsert_active_run(
+        plan.plan_id,
+        "plan",
+        plan.to_dict(),
+    )
     return json.dumps(plan.to_dict(), indent=2)
 
 
@@ -1615,6 +1807,23 @@ def _tool_plan_update(
     plan = registry.get(plan_id)
     if plan:
         store.save_plan(plan.to_dict())
+        _get_episodic().upsert_active_run(plan_id, "plan", plan.to_dict())
+        if mark_done and output_score is not None:
+            task = next((t for t in plan.tasks if t.id == task_id), None)
+            if task is not None:
+                _get_episodic().record_episode(
+                    episode_type="plan_node",
+                    goal=f"{plan.goal} [{task.title}]",
+                    task_type="general",
+                    model_id=_get_model(),
+                    summary=summarize_artifacts(
+                        plan.goal,
+                        output=task.description[:200],
+                        score_final=output_score,
+                    ),
+                    score_final=output_score,
+                    stop_reason="plan_task_done",
+                )
 
     return json.dumps(result, indent=2)
 
@@ -1682,6 +1891,7 @@ def _tool_plan_delete(plan_id: str) -> str:
     store = _get_store()
     in_memory = registry.delete(plan_id)
     on_disk = store.delete_plan(plan_id)
+    _get_episodic().clear_active_run(plan_id)  # drop any recovery snapshot
     return json.dumps({
         "deleted": in_memory or on_disk,
         "plan_id": plan_id,
@@ -2151,6 +2361,13 @@ def create_mcp_server() -> Any:
             "(test log, diff, summary). The server runs Conservative Dual-Verify: "
             "deterministic checks plus a separate critic call — do NOT self-grade. "
             "Honor the continue/stop verdict, then call loopllm_loop_end.\n\n"
+            "MEMORY: after loopllm_intercept, for tasks similar to past work call "
+            "loopllm_recall(goal) before planning — loop_start also surfaces "
+            "similar_episodes automatically. On loopllm_loop_end the outcome is "
+            "recorded to episodic memory for next time.\n\n"
+            "RECOVERY: if the IDE reloaded and loopllm_run_status shows an active "
+            "run, call loopllm_loop_resume before starting a new loop so the "
+            "in-progress loop continues instead of restarting cold.\n\n"
             "After presenting results to the user, call loopllm_feedback with "
             "the user's quality rating (1-5) to improve future predictions.\n\n"
             "Periodically call loopllm_prompt_stats to show the user their "
@@ -2161,6 +2378,16 @@ def create_mcp_server() -> Any:
     # Restore any plans saved in previous server sessions
     try:
         get_registry().restore_from_store(_get_store())
+    except Exception:  # noqa: BLE001
+        pass  # non-fatal: store may not exist yet
+
+    # Rehydrate in-progress agent loops so they survive an MCP/IDE restart.
+    try:
+        restored = _get_agent_loop().hydrate_active_loops(
+            _get_episodic().list_active_runs(run_type="agent_loop")
+        )
+        if restored:
+            logger.info("agent_loops_hydrated", count=restored)
     except Exception:  # noqa: BLE001
         pass  # non-fatal: store may not exist yet
 
@@ -2508,6 +2735,43 @@ def create_mcp_server() -> Any:
     )
     def loop_status(session_id: str) -> str:
         return _tool_loop_status(session_id)
+
+    @mcp.tool(
+        name="loopllm_recall",
+        description=(
+            "Recall similar past episodes (completed loops/plans) by keyword "
+            "search over goal, summary, and tags in ~/.loopllm/store.db."
+        ),
+    )
+    def recall(
+        query: str,
+        task_type: str | None = None,
+        k: int = 5,
+    ) -> str:
+        return _tool_recall(query, task_type, k)
+
+    @mcp.tool(
+        name="loopllm_run_status",
+        description=(
+            "Return active agent-loop and plan snapshots for IDE "
+            "reload recovery after a crash or MCP server restart."
+        ),
+    )
+    def run_status() -> str:
+        return _tool_run_status()
+
+    @mcp.tool(
+        name="loopllm_loop_resume",
+        description=(
+            "Resume an in-progress agent loop after an IDE reload or MCP restart. "
+            "Rehydrates the loop's verified state so the next loopllm_loop_step "
+            "continues where it left off. Omit session_id to resume the only "
+            "active loop (or get an ambiguity list). Call this when "
+            "loopllm_run_status shows an active run before starting a new loop."
+        ),
+    )
+    def loop_resume(session_id: str | None = None) -> str:
+        return _tool_loop_resume(session_id)
 
     @mcp.tool(
         name="loopllm_list_tasks",
