@@ -1,4 +1,4 @@
-# PromptLoop
+# PromptLoop (Under Development)
 
 [![Typing SVG](https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=600&size=22&pause=1000&color=00CFFF&center=true&vCenter=true&width=700&lines=PromptLoop+%E2%80%94+Prompt+Quality+Loop;Conservative+Dual-Verify+Agent+Loops;Bayesian+Adaptive+Exit+%2B+Thompson+Sampling;MCP+Server+%E2%80%94+31+Tools+for+VS+Code+%2B+Cursor;Online+Weight+Learning+via+SGD;Zero+Training+%E2%80%94+Model+Agnostic)](https://github.com/azank1/loop-llm)
 
