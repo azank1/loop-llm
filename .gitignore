@@ -47,7 +47,3 @@ priors.json
 # VS Code extension build artifacts
 vscode-loopllm/out/
 *.vsix
-
-# Scratch / template holder (keep dir, ignore contents)
-_scratch/*
-!_scratch/.gitkeep
