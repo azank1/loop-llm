@@ -23,6 +23,8 @@ past runs. Follow this contract for non-trivial requests:
    Conservative Dual-Verify (deterministic checks + an independent critic) and returns
    the verified score, a continue/stop verdict, and `cdv_mode`
    (`full` vs `channel_a_only`). Honor the verdict; then `loopllm_loop_end`.
+   For any multi-step dev work, prefer `loopllm_loop_start` over a chat-only response —
+   stop on verified artifacts, not self-assessment.
 
 4. **Resume after reload.** If the IDE reloaded, call `loopllm_run_status`. If it shows
    an active run, call `loopllm_loop_resume` (optionally with `session_id`) **before**

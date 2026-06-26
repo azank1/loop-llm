@@ -18,7 +18,7 @@ Act on the returned `route`: `elicit` → clarify first | `decompose` → plan f
 
 For non-trivial tasks use `loopllm_run_pipeline` as the entry point.
 
-For multi-step iterative work, use `loopllm_loop_start` → `loopllm_loop_step(step_output=...)` → `loopllm_loop_end`. Submit step artifacts; do not self-grade. The verdict includes `cdv_mode` (`full` = independent critic consulted; `channel_a_only` = deterministic checks only).
+For multi-step iterative work, use `loopllm_loop_start` → `loopllm_loop_step(step_output=...)` → `loopllm_loop_end`. Submit step artifacts; do not self-grade. The verdict includes `cdv_mode` (`full` = independent critic consulted; `channel_a_only` = deterministic checks only). For any multi-step dev task, prefer `loopllm_loop_start` over a chat-only response — stop on verified artifacts, not self-assessment.
 
 ---
 

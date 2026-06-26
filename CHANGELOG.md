@@ -6,7 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.8.0] — unreleased (branch: az/ft/episodic-memory)
+### Changed
+- **Repository cleanup (engineering-only).** Removed non-functional assets and
+  demo/tooling clutter to slim the repo to its load-bearing core:
+  - Deleted all images (`img/` — marketing screenshots, orphaned demo GIF/SVG),
+    `examples/`, `benchmarks/`, and one-off scripts (`generate_cdv_gif.py`,
+    `audit_cdv_loop.py`). The test suite (`tests/`) is now the usage reference.
+  - Dropped `tests/test_benchmark.py` (coupled to the removed `benchmarks/`).
+  - README reframed without screenshots/benchmark section; tool count corrected to 31.
+  - Kept: `src/loopllm/`, `tests/`, `vscode-loopllm/`, CI + release tooling, and
+    standard OSS hygiene docs.
+
+## [0.8.0] — merged to `main` (unreleased on PyPI)
 
 ### Added
 - **Episodic memory** (SQLite schema v5): `episodes` and `active_runs` tables.
@@ -74,8 +85,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Four new MCP tools (now 28 total): `loopllm_loop_start`, `loopllm_loop_step`,
   `loopllm_loop_end`, `loopllm_loop_status`.
 - `AgentLoopController` and `AgentLoopSession` exported from the package root.
-- Runnable example `examples/agent_loop.py` and walkthrough
-  `docs/demo/agent_loop_demo.md`.
+- Runnable example `examples/agent_loop.py`.
 - Reproducible benchmark `benchmarks/adaptive_vs_fixed.py` comparing adaptive
   stopping against fixed/threshold strategies (adaptive: ~41% fewer steps than a
   fixed 6-step budget at 99.7% goal-reach).

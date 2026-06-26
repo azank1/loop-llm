@@ -10,7 +10,8 @@
 **A Bayesian MCP sidecar for your IDE agent** — observe prompts, refine outputs, and
 stop agent loops using externally verified scores.
 
-> Current release: **v0.7.0**. Next: **v0.8.0** episodic memory (branch `az/ft/episodic-memory`, not released).
+> **Status:** latest PyPI release is **v0.7.0**. **v0.8.0** (episodic memory + session
+> continuity) is merged to `main`. **v0.9** (DAG virtual sub-agents) is in progress.
 
 ---
 
@@ -37,8 +38,8 @@ server rehydrates in-progress loops on startup; `loopllm_run_status` shows them 
 `loopllm_loop_step` verdict also reports `cdv_mode` (`full` when an independent
 critic ran via MCP sampling, `channel_a_only` when only deterministic checks ran).
 
-For complex multi-step work, **DAG virtual sub-agents** are planned for v0.9 on
-branch `az/ft/dag-virtual-agents` — not released yet.
+For complex multi-step work, **DAG virtual sub-agents** are planned for v0.9 (in
+progress, not yet on `main`).
 
 ---
 
@@ -65,7 +66,7 @@ training data, no PyTorch.
 ```mermaid
 flowchart TB
   subgraph interfaces [Interfaces]
-    MCP[MCP 31 tools on v0.8 branch]
+    MCP[MCP 31 tools]
     Ext[VS Code extension]
   end
   subgraph layers [Three layers]
@@ -186,39 +187,24 @@ Committed [`.cursor/mcp.json`](.cursor/mcp.json) and [`.vscode/mcp.json`](.vscod
 
 ## VS Code Extension
 
-Install the companion extension for a live quality scratchpad and prompt history
-dashboard directly in the sidebar.
+The companion extension ([`vscode-loopllm/`](vscode-loopllm/)) is the observability
+surface for the sidecar — three sidebar panels, all reading directly from `~/.loopllm/`
+(no MCP connection needed):
 
-<table>
-<tr>
-<td width="50%" valign="top">
+- **Loop Monitor** — active agent loops + recent episodes: each loop's goal, step
+  scores, last decision, and `cdv_mode`. Watch the conductor's state live.
+- **Prompt Lab** — live quality scratchpad. Scores on every keystroke (350 ms debounce):
+  grade badge, 5 dimension bars, issues + suggestions.
+- **History** — learning curve, grade distribution, and SGD-learned weights per
+  dimension; updates after every `loopllm_feedback` call.
 
-**Prompt Lab** — live quality scratchpad
-
-![Prompt Lab](img/Screenshot_20260222_171552_Chrome.jpg)
-
-Scores on every keystroke (350 ms debounce). Grade badge, 5 dimension bars, issues + suggestions tags, Copy and Send to Chat.
-
-</td>
-<td width="50%" valign="top">
-
-**History** — learning curve + metrics
-
-![History](img/Screenshot_20260222_171624_Chrome.jpg)
-
-Learning curve sparkline, grade distribution, SGD learned weights per dimension. Updates after every `loopllm_feedback` call.
-
-</td>
-</tr>
-</table>
-
-Build and install the extension from source:
+Build and install from source:
 
 ```bash
 cd vscode-loopllm
 npm install
-npx @vscode/vsce package          # produces loopllm-prompt-gauge-0.1.0.vsix
-code --install-extension loopllm-prompt-gauge-0.1.0.vsix
+npx @vscode/vsce package
+code --install-extension loopllm-*.vsix
 ```
 
 ---
@@ -261,7 +247,7 @@ loopllm_loop_end(session_id)   → learns optimal depth from verified trajectori
 `loopllm_loop_step` returns `stop` when any guard fires: goal reached (verified score),
 plateau, low Bayesian ROI, budget exhausted, timeout, token cap, or repeated output.
 
-See [`examples/agent_loop.py`](examples/agent_loop.py) for the library demo and CDV via MCP.
+The library API (no MCP) — see `tests/test_agent_loop.py` for full usage:
 
 ```python
 from loopllm import AdaptivePriors, AgentLoopController
@@ -296,37 +282,8 @@ while stop.should_continue(state):   # state = {"output": artifact, "tokens": n}
     state = run_agent_step(state)
 ```
 
-See [`examples/langgraph_stopper.py`](examples/langgraph_stopper.py) for a runnable
-graph-style demo (no LangGraph dependency required).
-
-![Adaptive agent loop demo](img/agent_loop.svg)
-
-What a terminal run looks like (`python examples/agent_loop.py`):
-
-```text
-=== Loop (task_type=bugfix) ===
-Suggested budget: 3 step(s) | threshold 0.80 | confidence 0.00 (from 0 past loops)
-  step  1 | 0.45 |#########           | -> CONTINUE: step 1/3, score 0.450 below 0.80
-  step  2 | 0.85 |#################   | -> STOP: Goal reached: 0.850 >= 0.80 at step 2
-```
-
-### Benchmark: adaptive vs fixed `max_iterations`
-
-Reproducible simulation (`benchmarks/adaptive_vs_fixed.py`, seed=7, 300 test tasks,
-threshold 0.80):
-
-| Strategy | Mean steps | Mean final score | % reaching 0.80 | Wasted steps | Efficiency (reach/step) |
-|---|---|---|---|---|---|
-| fixed (budget=2) | 2.00 | 0.698 | 34.3% | 0.00 | 17.2 |
-| fixed (budget=6) | 6.00 | 0.939 | 94.0% | 2.50 | 15.7 |
-| threshold (reactive) | 3.56 | 0.852 | 100.0% | 0.00 | 28.1 |
-| **adaptive (loopllm)** | **3.56** | **0.852** | **99.7%** | **0.00** | **28.0** |
-
-**Adaptive uses ~41% fewer steps than a fixed 6-step budget** while reaching the bar
-on 99.7% of tasks. Repro: `python benchmarks/adaptive_vs_fixed.py`.
-
-> Honest caveat: simulation with stated assumptions; measures *decision efficiency
-> given a quality signal*, not absolute model quality.
+The router stops the loop on the verified score, not the model's self-grade. See
+`tests/test_adapters.py` for runnable usage.
 
 ---
 
@@ -416,7 +373,7 @@ PyPI: [`loopllm`](https://pypi.org/project/loopllm/) · extras: `[mcp]` (IDE ser
 
 ---
 
-## Tools (32)
+## Tools (31)
 
 | Tool | What it does |
 |---|---|
@@ -441,6 +398,7 @@ PyPI: [`loopllm`](https://pypi.org/project/loopllm/) · extras: `[mcp]` (IDE ser
 | `loopllm_loop_step` | Submit step artifact for CDV; returns continue/stop + channel scores |
 | `loopllm_loop_end` | Close loop and learn optimal depth from verified trajectories |
 | `loopllm_loop_status` | Inspect an active agent-loop session |
+| `loopllm_loop_resume` | Resume a checkpointed loop after an MCP/IDE restart |
 | `loopllm_recall` | Keyword recall of similar past episodes |
 | `loopllm_run_status` | Active loop/plan snapshots for crash recovery |
 | `loopllm_classify_task` | Label a prompt's task type |
